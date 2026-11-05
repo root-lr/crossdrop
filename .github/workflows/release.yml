@@ -3,6 +3,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Or from the Actions tab: "Run workflow", with the version to release.
+  # The tag is created on the commit the workflow runs on.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to create, e.g. v0.4.0
+        required: true
+        default: v0.4.0
 
 permissions:
   contents: write
@@ -23,6 +31,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,8 +55,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         with:
           projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: crossdrop ${{ github.ref_name }}
+          tagName: ${{ env.VERSION }}
+          releaseName: crossdrop ${{ env.VERSION }}
+          releaseCommitish: ${{ github.sha }}
           releaseBody: See the README for what changed and how to install.
           releaseDraft: true
 
@@ -56,11 +66,11 @@ jobs:
       - name: Package the command-line tools
         shell: bash
         run: |
-          name=crossdrop-cli-${{ github.ref_name }}-$(rustc -vV | sed -n 's/host: //p')
+          name=crossdrop-cli-$VERSION-$(rustc -vV | sed -n 's/host: //p')
           mkdir "$name"
           for bin in crossdrop crossdropd interdesk; do
             cp "target/release/$bin$([ "$RUNNER_OS" = Windows ] && echo .exe)" "$name/"
           done
           cp README.md LICENSE-MIT LICENSE-APACHE "$name/"
           if [ "${{ matrix.archive }}" = zip ]; then 7z a "$name.zip" "$name" >/dev/null; else tar czf "$name.tar.gz" "$name"; fi
-          gh release upload "${{ github.ref_name }}" "$name.${{ matrix.archive }}" --clobber
+          gh release upload "$VERSION" "$name.${{ matrix.archive }}" --clobber
