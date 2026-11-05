@@ -8,12 +8,12 @@ network, you pair them once by comparing a 6-digit code, and they talk
 peer-to-peer over QUIC.
 
 It is also a **platform**: extensions plug into the same secure links through
-a small local API. The first one, **interdesk**, will let one mouse and
-keyboard drive every PC on your desk.
+a small local API. The first one, **interdesk**, lets one mouse and keyboard
+drive every computer on your desk.
 
-> Status: **v0.2, early**. Pairing, files and folders with resume, and
-> clipboard sharing work on the LAN from the command line. interdesk and the
-> desktop app are next — see the [roadmap](#roadmap).
+> Status: **v0.3, early**. Pairing, files and folders with resume, clipboard
+> sharing and **interdesk** (shared mouse and keyboard) work on the LAN from
+> the command line. The desktop app is next — see the [roadmap](#roadmap).
 
 ## Features
 
@@ -36,7 +36,7 @@ keyboard drive every PC on your desk.
 ## Quick start
 
 ```sh
-cargo install --git https://github.com/root-lr/crossdrop crossdrop-cli
+cargo install --git https://github.com/root-lr/crossdrop crossdrop-cli interdesk
 ```
 
 On each computer:
@@ -93,6 +93,18 @@ Copy on one, paste on the other. From a script or a server:
 All commands take `--home <dir>` to use another data directory, handy to run
 two daemons on one machine.
 
+## interdesk: one mouse and keyboard for all your computers
+
+```sh
+interdesk add bravo right       # on alpha: bravo is to the right of this screen
+crossdrop allow alpha input     # on bravo: alpha may drive it
+interdesk run                   # on both
+```
+
+Push the cursor past alpha's right edge and it continues on bravo, keyboard
+included. Ctrl+Alt+Esc brings it back. Linux (X11), Windows and macOS. See
+[docs/interdesk.md](docs/interdesk.md).
+
 ## How it works
 
 ```
@@ -111,14 +123,15 @@ Details: [docs/protocol.md](docs/protocol.md).
 | [`crossdrop-daemon`](crates/crossdrop-daemon) | `crossdropd`: trust, permissions, routing, built-in services |
 | [`crossdrop-sdk`](crates/crossdrop-sdk) | Client library for the CLI, apps and extensions |
 | [`crossdrop-cli`](crates/crossdrop-cli) | The `crossdrop` command |
+| [`interdesk`](crates/interdesk) | Shared mouse and keyboard, an extension using only `crossdrop-sdk` |
 
 ## Roadmap
 
 | Version | Scope |
 | --- | --- |
 | v0.1 ✓ | Identity, pairing, encrypted channels, extension API, file transfer (CLI) |
-| **v0.2** ✓ | Folders, resumable transfers, accept/decline incoming files, clipboard sync |
-| v0.3 | **interdesk**: shared mouse and keyboard (Windows, macOS, X11) |
+| v0.2 ✓ | Folders, resumable transfers, accept/decline incoming files, clipboard sync |
+| **v0.3** ✓ | **interdesk**: shared mouse and keyboard (Windows, macOS, X11) |
 | v0.4 | Desktop app (Tauri), drag & drop files across screens |
 | v0.5 | Connections over the internet: hole punching, self-hostable relay |
 | v1.0 | Frozen protocol, signed binaries, published benchmarks |

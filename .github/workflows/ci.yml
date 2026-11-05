@@ -34,3 +34,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+
+  x11:
+    name: interdesk on a real X server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 1
+          DISPLAY=:99 cargo test -p interdesk --lib -- --ignored
