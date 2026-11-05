@@ -104,7 +104,8 @@ Acceptance rules on the receiving device:
 
 ## Clipboard (`crossdrop/clipboard`)
 
-One channel per update, carrying one frame `{"text":"…"}`.
+One channel per update: the sender writes `{"text":"…"}`, the receiver
+applies it and answers `{"type":"accepted"}`.
 
 Sharing is opt-in per device and symmetric in intent: `crossdrop allow X
 clipboard` lets X write to this device's clipboard **and** makes this device

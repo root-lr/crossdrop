@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_core::{open_channel, peer_id, sas, Channel, Connection, DeviceId, Discovered, Node, PendingChannel};
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
-use crossdrop_proto::wire::{Clipboard, Pair};
+use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
 use crossdrop_proto::{read_frame, services, write_frame};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
@@ -174,6 +174,8 @@ impl Daemon {
             let mut io = pending.accept().await?.into_io();
             let Clipboard { text } = read_frame(&mut io).await?;
             self.apply_remote_clipboard(text, device.name.clone());
+            write_frame(&mut io, &ChannelReply::Accepted).await?;
+            let _ = io.shutdown().await;
             return Ok(());
         }
         let handler = self.services.lock().unwrap().get(&service).filter(|tx| !tx.is_closed()).cloned();
@@ -347,7 +349,12 @@ impl Daemon {
             .map_err(|_| anyhow!("{} did not answer", self.device_name(peer)))??;
         let mut io = open_channel(&conn, services::CLIPBOARD).await?.into_io();
         write_frame(&mut io, &Clipboard { text }).await?;
-        io.shutdown().await?;
+        // Delivered only once the peer says it applied the text.
+        let ack = tokio::time::timeout(Duration::from_secs(5), read_frame::<_, ChannelReply>(&mut io)).await??;
+        if ack != ChannelReply::Accepted {
+            bail!("clipboard refused");
+        }
+        let _ = io.shutdown().await;
         Ok(())
     }
 
