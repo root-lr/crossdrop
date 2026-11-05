@@ -1,0 +1,24 @@
+[package]
+name = "crossdrop-core"
+description = "Identity, encrypted QUIC transport, channels and LAN discovery for crossdrop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+blake3 = "1.8.7"
+crossdrop-proto = { version = "0.1.0", path = "../crossdrop-proto" }
+data-encoding = "2.11.1"
+mdns-sd = "0.21.7"
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rcgen = "0.14.10"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"

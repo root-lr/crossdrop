@@ -1,0 +1,254 @@
+//! Shared protocol types for crossdrop.
+//!
+//! Two protocols live here:
+//! - the **wire** protocol spoken between devices over QUIC ([`wire`]);
+//! - the **IPC** protocol spoken between the local daemon and its clients
+//!   (CLI, desktop app, extensions) ([`ipc`]).
+//!
+//! Both use the same framing: a big-endian `u32` length followed by a JSON
+//! payload. After a channel has been opened (or an IPC connection attached),
+//! the stream carries whatever bytes the service wants.
+
+use serde::{de::DeserializeOwned, Serialize};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+/// ALPN identifier and protocol version negotiated in the QUIC handshake.
+pub const ALPN: &[u8] = b"crossdrop/1";
+
+/// Default UDP port of the daemon.
+pub const DEFAULT_PORT: u16 = 47470;
+
+/// mDNS service type announced by every daemon.
+pub const MDNS_SERVICE_TYPE: &str = "_crossdrop._udp.local.";
+
+/// Upper bound for a single control frame. Bulk data never goes through frames.
+pub const MAX_FRAME_LEN: u32 = 1024 * 1024;
+
+/// Well-known service names.
+pub mod services {
+    /// Pairing handshake. The only service an unpaired device may open.
+    pub const PAIR: &str = "crossdrop/pair";
+    /// Built-in file transfer.
+    pub const FILES: &str = "crossdrop/files";
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FrameError {
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("frame too large: {0} bytes")]
+    TooLarge(u32),
+    #[error("invalid frame: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("stream closed")]
+    Closed,
+}
+
+/// Writes one length-prefixed JSON frame.
+pub async fn write_frame<W, T>(w: &mut W, msg: &T) -> Result<(), FrameError>
+where
+    W: AsyncWrite + Unpin,
+    T: Serialize,
+{
+    let body = serde_json::to_vec(msg)?;
+    let len = u32::try_from(body.len()).map_err(|_| FrameError::TooLarge(u32::MAX))?;
+    if len > MAX_FRAME_LEN {
+        return Err(FrameError::TooLarge(len));
+    }
+    w.write_all(&len.to_be_bytes()).await?;
+    w.write_all(&body).await?;
+    w.flush().await?;
+    Ok(())
+}
+
+/// Reads one length-prefixed JSON frame. Returns [`FrameError::Closed`] on a
+/// clean end of stream before the first byte.
+pub async fn read_frame<R, T>(r: &mut R) -> Result<T, FrameError>
+where
+    R: AsyncRead + Unpin,
+    T: DeserializeOwned,
+{
+    let mut len = [0u8; 4];
+    match r.read_exact(&mut len).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Err(FrameError::Closed),
+        Err(e) => return Err(e.into()),
+    }
+    let len = u32::from_be_bytes(len);
+    if len > MAX_FRAME_LEN {
+        return Err(FrameError::TooLarge(len));
+    }
+    let mut body = vec![0u8; len as usize];
+    r.read_exact(&mut body).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+/// Messages exchanged between two devices.
+pub mod wire {
+    use serde::{Deserialize, Serialize};
+
+    /// First frame on every new QUIC stream.
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct OpenChannel {
+        pub service: String,
+        pub version: u32,
+    }
+
+    /// Answer to [`OpenChannel`].
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub enum ChannelReply {
+        Accepted,
+        Rejected { reason: String },
+    }
+
+    /// Pairing service messages.
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub enum Pair {
+        /// Sent by the initiator once its user confirmed the code.
+        Request { name: String },
+        /// Sent by the responder once its user decided.
+        Response { accepted: bool, name: String },
+    }
+
+    /// File service messages. File bytes follow a `File` frame directly.
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub enum Files {
+        File {
+            name: String,
+            size: u64,
+        },
+        /// BLAKE3 hash (hex) of the file that was just sent.
+        FileEnd {
+            blake3: String,
+        },
+        End,
+        /// Final answer from the receiver.
+        Done {
+            received: u32,
+        },
+        Error {
+            message: String,
+        },
+    }
+}
+
+/// Messages between the local daemon and its clients.
+pub mod ipc {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub enum Request {
+        Status,
+        ListDevices,
+        /// Start pairing with a device: id prefix, name, or `ip:port`.
+        PairStart {
+            target: String,
+        },
+        /// The local user compared the code and decided.
+        PairConfirm {
+            pair_id: String,
+            accept: bool,
+        },
+        /// Incoming pairing requests waiting for a decision.
+        ListPairRequests,
+        /// Answer an incoming pairing request.
+        PairAnswer {
+            pair_id: String,
+            accept: bool,
+        },
+        Unpair {
+            device: String,
+        },
+        SetPermission {
+            device: String,
+            service: String,
+            allow: bool,
+        },
+        /// Become the handler of a service. Turns the connection into an
+        /// event stream of [`Event::IncomingChannel`].
+        Register {
+            service: String,
+        },
+        /// Open a channel to a paired device.
+        OpenChannel {
+            device: String,
+            service: String,
+        },
+        /// First and only request of a data connection: bind it to a channel.
+        /// After `Response::Ok`, the connection carries raw bytes.
+        Attach {
+            channel_id: String,
+        },
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub enum Response {
+        Ok,
+        Error { message: String },
+        Status { device_id: String, name: String, port: u16, version: String },
+        Devices { devices: Vec<DeviceInfo> },
+        PairChallenge { pair_id: String, sas: String, peer_id: String, peer_name: String },
+        PairResult { paired: bool, peer_id: String, peer_name: String },
+        PairRequests { requests: Vec<PairRequestInfo> },
+        ChannelReady { channel_id: String },
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub enum Event {
+        IncomingChannel { channel_id: String, device: String, service: String },
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct DeviceInfo {
+        pub id: String,
+        pub name: String,
+        pub addrs: Vec<String>,
+        pub paired: bool,
+        pub online: bool,
+        pub permissions: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct PairRequestInfo {
+        pub pair_id: String,
+        pub peer_id: String,
+        pub peer_name: String,
+        pub sas: String,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frame_roundtrip() {
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        let msg = wire::OpenChannel { service: services::FILES.into(), version: 1 };
+        write_frame(&mut a, &msg).await.unwrap();
+        let got: wire::OpenChannel = read_frame(&mut b).await.unwrap();
+        assert_eq!(got, msg);
+    }
+
+    #[tokio::test]
+    async fn closed_stream_is_reported() {
+        let (a, mut b) = tokio::io::duplex(16);
+        drop(a);
+        let err = read_frame::<_, wire::ChannelReply>(&mut b).await.unwrap_err();
+        assert!(matches!(err, FrameError::Closed));
+    }
+
+    #[tokio::test]
+    async fn oversized_frame_is_rejected() {
+        let (mut a, mut b) = tokio::io::duplex(16);
+        tokio::io::AsyncWriteExt::write_all(&mut a, &(MAX_FRAME_LEN + 1).to_be_bytes()).await.unwrap();
+        let err = read_frame::<_, wire::ChannelReply>(&mut b).await.unwrap_err();
+        assert!(matches!(err, FrameError::TooLarge(_)));
+    }
+}
