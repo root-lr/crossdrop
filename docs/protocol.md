@@ -1,6 +1,6 @@
 # crossdrop protocol, version 1
 
-Status: draft, implemented by crossdrop v0.1. Breaking changes bump the ALPN.
+Status: draft, implemented by crossdrop v0.2. Breaking changes bump the ALPN.
 
 ## Transport
 
@@ -36,7 +36,7 @@ Devices can also be reached by `ip:port` when multicast is blocked.
 ## Framing
 
 Control messages are frames: a big-endian `u32` length, then a UTF-8 JSON body
-(max 1 MiB). Tagged enums use a `"type"` field in `snake_case`. Bulk data is
+(max 8 MiB). Tagged enums use a `"type"` field in `snake_case`. Bulk data is
 never framed.
 
 ## Channels
@@ -75,19 +75,43 @@ Acceptance rules on the receiving device:
 
 ## Files (`crossdrop/files`)
 
-Sender, for each file:
-
 ```
-{"type":"file","name":"report.pdf","size":123456}   frame
-<size raw bytes>
-{"type":"file_end","blake3":"<hex>"}                frame
+→ {"type":"offer","entries":[{"path":"photos/2026/a.jpg","size":123456,"mtime":1793900000}, …]}
+← {"type":"answer","accepted":true,"offsets":[0, …]}
+   for each entry, in order:
+→ <size - offset raw bytes>
+→ {"type":"file_end","blake3":"<hex of the WHOLE file>"}
+→ {"type":"end"}
+← {"type":"done","received":N}  |  {"type":"error","message":"…"}
 ```
 
-then `{"type":"end"}`. The receiver writes to a hidden `.name.crossdrop-part`
-file, checks the BLAKE3 hash, renames to a free name in its download folder
-(`name (1).ext` if taken) and finally answers `{"type":"done","received":N}`
-or `{"type":"error","message":"…"}`. File names are reduced to their last
-path component; control characters and leading dots are removed.
+- `path` is relative, `/`-separated; its first component is the transfer
+  root (a file name or a folder name). Folders are sent recursively;
+  symbolic links and empty folders are skipped.
+- The receiver may wait for its user (`crossdrop accept`, up to 5 minutes)
+  unless the sender's device is set to auto-accept. A refusal is
+  `{"type":"answer","accepted":false,"offsets":[]}`.
+- **Resume.** Data is written to `<downloads>/.crossdrop-partial/<key>.part`,
+  `key = BLAKE3(sender id, path, size, mtime)`. When the same file is offered
+  again, `offsets[i]` is the length already held; the sender skips those
+  bytes but still hashes them, so the final check covers the whole file. A
+  journal per transfer keeps the chosen root name and the files already
+  completed. Leftovers untouched for 7 days are deleted.
+- **Safety.** Path components are cleaned (control characters removed,
+  `\ : * ? " < > |` replaced by `_`); `..`, empty components and absolute
+  paths are refused. A root that already exists in the download folder gets a
+  free name: `photos (1)`, `report (1).pdf`.
+
+## Clipboard (`crossdrop/clipboard`)
+
+One channel per update, carrying one frame `{"text":"…"}`.
+
+Sharing is opt-in per device and symmetric in intent: `crossdrop allow X
+clipboard` lets X write to this device's clipboard **and** makes this device
+send its own copies to X. Each daemon polls the system clipboard every
+500 ms; text received from a peer is remembered so it is not sent back.
+Headless devices without a system clipboard still accept and expose the last
+text through `crossdrop clip get`.
 
 ## Reserved service names
 

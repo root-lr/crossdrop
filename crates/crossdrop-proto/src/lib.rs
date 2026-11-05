@@ -22,14 +22,16 @@ pub const DEFAULT_PORT: u16 = 47470;
 pub const MDNS_SERVICE_TYPE: &str = "_crossdrop._udp.local.";
 
 /// Upper bound for a single control frame. Bulk data never goes through frames.
-pub const MAX_FRAME_LEN: u32 = 1024 * 1024;
+pub const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
 
 /// Well-known service names.
 pub mod services {
     /// Pairing handshake. The only service an unpaired device may open.
     pub const PAIR: &str = "crossdrop/pair";
-    /// Built-in file transfer.
+    /// Built-in file and folder transfer.
     pub const FILES: &str = "crossdrop/files";
+    /// Built-in clipboard sharing.
+    pub const CLIPBOARD: &str = "crossdrop/clipboard";
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -112,26 +114,49 @@ pub mod wire {
         Response { accepted: bool, name: String },
     }
 
-    /// File service messages. File bytes follow a `File` frame directly.
+    /// One file of a transfer. `path` is relative and `/`-separated
+    /// (`photos/2026/a.jpg`); its first component is the transfer root.
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct FileEntry {
+        pub path: String,
+        pub size: u64,
+        /// Modification time, seconds since the Unix epoch. Part of the
+        /// resume key, so a changed file restarts from zero.
+        pub mtime: u64,
+    }
+
+    /// File service messages.
+    ///
+    /// `Offer` → `Answer`, then for each entry: the bytes from its offset to
+    /// its end, raw, followed by `FileEnd`; finally `End` → `Done` / `Error`.
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Files {
-        File {
-            name: String,
-            size: u64,
+        Offer {
+            entries: Vec<FileEntry>,
         },
-        /// BLAKE3 hash (hex) of the file that was just sent.
+        /// `offsets[i]` = bytes of entry `i` the receiver already holds.
+        Answer {
+            accepted: bool,
+            offsets: Vec<u64>,
+        },
+        /// BLAKE3 (hex) of the whole file that was just sent.
         FileEnd {
             blake3: String,
         },
         End,
-        /// Final answer from the receiver.
         Done {
             received: u32,
         },
         Error {
             message: String,
         },
+    }
+
+    /// Clipboard service: one message per channel.
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct Clipboard {
+        pub text: String,
     }
 }
 
@@ -183,6 +208,24 @@ pub mod ipc {
         Attach {
             channel_id: String,
         },
+        /// Incoming file transfers waiting for a decision.
+        ListOffers,
+        OfferAnswer {
+            offer_id: String,
+            accept: bool,
+        },
+        /// Accept files from this device without asking.
+        SetAutoAccept {
+            device: String,
+            enabled: bool,
+        },
+        /// Send text to one device, or to every device allowed `crossdrop/clipboard`.
+        ClipboardSend {
+            text: String,
+            device: Option<String>,
+        },
+        /// Last clipboard text received from another device.
+        ClipboardGet,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -196,6 +239,9 @@ pub mod ipc {
         PairResult { paired: bool, peer_id: String, peer_name: String },
         PairRequests { requests: Vec<PairRequestInfo> },
         ChannelReady { channel_id: String },
+        Offers { offers: Vec<OfferInfo> },
+        Sent { count: u32 },
+        Clipboard { text: Option<String>, from: Option<String> },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -212,6 +258,19 @@ pub mod ipc {
         pub paired: bool,
         pub online: bool,
         pub permissions: Vec<String>,
+        #[serde(default)]
+        pub auto_accept: bool,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct OfferInfo {
+        pub offer_id: String,
+        pub peer_id: String,
+        pub peer_name: String,
+        pub files: u32,
+        pub total_bytes: u64,
+        /// First few paths, for display.
+        pub preview: Vec<String>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

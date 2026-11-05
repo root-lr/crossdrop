@@ -11,11 +11,11 @@ It is also a **platform**: extensions plug into the same secure links through
 a small local API. The first one, **interdesk**, will let one mouse and
 keyboard drive every PC on your desk.
 
-> Status: **v0.1, early**. File transfer and pairing work on the LAN from the
-> command line. Clipboard sync, the desktop app and interdesk are next — see
-> the [roadmap](#roadmap).
+> Status: **v0.2, early**. Pairing, files and folders with resume, and
+> clipboard sharing work on the LAN from the command line. interdesk and the
+> desktop app are next — see the [roadmap](#roadmap).
 
-## Features (v0.1)
+## Features
 
 - **Zero setup discovery** over mDNS, or connect by `ip:port`.
 - **Pairing with a short code** (SAS) derived from the TLS session: a
@@ -24,7 +24,12 @@ keyboard drive every PC on your desk.
   certificate authority.
 - **Per-device, per-service permissions**: a paired device may send you files,
   and nothing else until you allow it.
-- **File transfer** streamed with constant memory and verified with BLAKE3.
+- **Files and folders**, streamed with constant memory, verified with BLAKE3,
+  and **resumed** where they stopped if the connection drops.
+- **You decide what comes in**: incoming transfers wait for `crossdrop accept`,
+  unless you trust a device to auto-accept.
+- **Clipboard sharing** between desktops (opt-in per device), plus
+  `crossdrop clip send/get` for headless machines and scripts.
 - **Extension API**: register a service, receive authenticated byte streams
   ([docs/extensions.md](docs/extensions.md)).
 
@@ -53,21 +58,35 @@ On computer B:
 crossdrop accept            # shows the same code; confirm
 ```
 
-Send files:
+Send files and folders:
 
 ```sh
-crossdrop send report.pdf photos.zip --to bravo
+crossdrop send report.pdf ~/Pictures/holidays --to bravo
 ```
 
-Files land in `~/Downloads/crossdrop` (configurable in `config.toml`).
+On bravo, `crossdrop accept` (or `crossdrop auto-accept alpha` once). Files
+land in `~/Downloads/crossdrop` (configurable in `config.toml`). If the
+transfer is cut, run the same command again: it resumes.
+
+Share the clipboard (run on both devices, each naming the other):
+
+```sh
+crossdrop allow bravo clipboard     # on alpha
+crossdrop allow alpha clipboard     # on bravo
+```
+
+Copy on one, paste on the other. From a script or a server:
+`echo "text" | crossdrop clip send --to bravo`, `crossdrop clip get`.
 
 | Command | What it does |
 | --- | --- |
 | `crossdrop status` | This device's name, id and port |
 | `crossdrop devices` | Paired and nearby devices |
 | `crossdrop pair <name \| id \| ip:port>` | Start pairing |
-| `crossdrop requests` / `accept` / `reject` | Answer pairing requests |
-| `crossdrop send <files…> --to <device>` | Send files |
+| `crossdrop requests` / `accept` / `reject` | Answer pairing requests and incoming transfers |
+| `crossdrop send <files or folders…> --to <device>` | Send, or resume sending |
+| `crossdrop auto-accept <device> [--off]` | Trust a device's files without asking |
+| `crossdrop clip send [text] [--to device]` / `clip get` | Share text with clipboards |
 | `crossdrop allow <device> <service>` / `deny` | Manage permissions (`files`, `clipboard`, `input`, or a full name) |
 | `crossdrop unpair <device>` | Forget a device |
 
@@ -97,8 +116,8 @@ Details: [docs/protocol.md](docs/protocol.md).
 
 | Version | Scope |
 | --- | --- |
-| **v0.1** | Identity, pairing, encrypted channels, extension API, file transfer (CLI) |
-| v0.2 | Folders, resumable transfers, accept/decline incoming files, clipboard sync |
+| v0.1 ✓ | Identity, pairing, encrypted channels, extension API, file transfer (CLI) |
+| **v0.2** ✓ | Folders, resumable transfers, accept/decline incoming files, clipboard sync |
 | v0.3 | **interdesk**: shared mouse and keyboard (Windows, macOS, X11) |
 | v0.4 | Desktop app (Tauri), drag & drop files across screens |
 | v0.5 | Connections over the internet: hole punching, self-hostable relay |

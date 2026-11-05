@@ -6,7 +6,9 @@ use std::time::Instant;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use crossdrop_sdk::{files::send_files, Client, Paths};
+use crossdrop_proto::ipc::{OfferInfo, PairRequestInfo};
+use crossdrop_sdk::files::{send_files, Declined, SendEvent};
+use crossdrop_sdk::{Client, Paths};
 
 #[derive(Parser)]
 #[command(name = "crossdrop", version, about = "Share files and more between your devices, end-to-end encrypted.")]
@@ -48,17 +50,17 @@ enum Command {
         #[arg(long, short)]
         yes: bool,
     },
-    /// List pairing requests waiting for an answer.
+    /// List pairing requests and incoming transfers waiting for an answer.
     Requests,
-    /// Accept a pairing request (the only one, if no id is given).
+    /// Accept a pairing request or an incoming transfer (the only one, if no id is given).
     Accept {
-        pair_id: Option<String>,
+        id: Option<String>,
         #[arg(long, short)]
         yes: bool,
     },
-    /// Reject a pairing request.
-    Reject { pair_id: Option<String> },
-    /// Send files to a paired device.
+    /// Reject a pairing request or an incoming transfer.
+    Reject { id: Option<String> },
+    /// Send files and folders to a paired device. Interrupted transfers resume.
     Send {
         #[arg(required = true)]
         files: Vec<PathBuf>,
@@ -66,12 +68,33 @@ enum Command {
         #[arg(long, short)]
         to: String,
     },
+    /// Share text with your devices' clipboards.
+    #[command(subcommand)]
+    Clip(Clip),
+    /// Store files from a device without asking (`--off` to ask again).
+    AutoAccept {
+        device: String,
+        #[arg(long)]
+        off: bool,
+    },
     /// Allow a paired device to use a service (files, clipboard, input, or a full name).
     Allow { device: String, service: String },
     /// Revoke a service permission.
     Deny { device: String, service: String },
     /// Forget a paired device.
     Unpair { device: String },
+}
+
+#[derive(Subcommand)]
+enum Clip {
+    /// Send text (argument or standard input) to one device, or to every clipboard peer.
+    Send {
+        text: Option<String>,
+        #[arg(long, short)]
+        to: Option<String>,
+    },
+    /// Print the last text another device shared.
+    Get,
 }
 
 fn service_name(s: &str) -> String {
@@ -133,6 +156,7 @@ async fn run(cli: Cli) -> Result<()> {
                 port,
                 mdns: no_mdns.then_some(false),
                 download_dir,
+                clipboard_sync: None,
             })
             .await?;
         }
@@ -158,7 +182,8 @@ async fn run(cli: Cli) -> Result<()> {
                 };
                 println!("{:<20} {}  {:<15} {}", d.name, short(&d.id), state, d.addrs.join(", "));
                 if d.paired {
-                    println!("{:<20} allowed: {}", "", d.permissions.join(", "));
+                    let auto = if d.auto_accept { "  (files accepted automatically)" } else { "" };
+                    println!("{:<20} allowed: {}{auto}", "", d.permissions.join(", "));
                 }
             }
         }
@@ -188,59 +213,129 @@ async fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Requests => {
-            let requests = connect().await?.pair_requests().await?;
-            if requests.is_empty() {
-                println!("No pending pairing request.");
-            }
-            for r in requests {
-                println!("{}  {} ({})  code {}", r.pair_id, r.peer_name, short(&r.peer_id), r.sas);
-            }
-        }
-
-        Command::Accept { pair_id, yes } => {
             let mut client = connect().await?;
-            let request = pick_request(&mut client, pair_id).await?;
-            println!("{} ({}) wants to pair.", request.peer_name, short(&request.peer_id));
-            println!();
-            println!("    Code: {}", request.sas);
-            println!();
-            let ok = yes || confirm("Is this the code shown on the other device?")?;
-            client.pair_answer(&request.pair_id, ok).await?;
-            if ok {
+            let pairs = client.pair_requests().await?;
+            let offers = client.offers().await?;
+            if pairs.is_empty() && offers.is_empty() {
+                println!("Nothing waiting.");
+            }
+            for r in pairs {
+                println!("{}  pairing   {} ({})  code {}", &r.pair_id[..8], r.peer_name, short(&r.peer_id), r.sas);
+            }
+            for o in offers {
                 println!(
-                    "Paired with {}. It may send you files; allow more with `crossdrop allow`.",
-                    request.peer_name
+                    "{}  files     {} wants to send {} file(s), {}: {}{}",
+                    &o.offer_id[..8],
+                    o.peer_name,
+                    o.files,
+                    human(o.total_bytes),
+                    o.preview.join(", "),
+                    if (o.files as usize) > o.preview.len() { ", …" } else { "" }
                 );
-            } else {
-                println!("Rejected.");
             }
         }
 
-        Command::Reject { pair_id } => {
-            let mut client = connect().await?;
-            let request = pick_request(&mut client, pair_id).await?;
-            client.pair_answer(&request.pair_id, false).await?;
-            println!("Rejected {}.", request.peer_name);
-        }
+        Command::Accept { id, yes } => match pick_request(&mut connect().await?, id).await? {
+            Pending::Pair(request) => {
+                let mut client = connect().await?;
+                println!("{} ({}) wants to pair.", request.peer_name, short(&request.peer_id));
+                println!();
+                println!("    Code: {}", request.sas);
+                println!();
+                let ok = yes || confirm("Is this the code shown on the other device?")?;
+                client.pair_answer(&request.pair_id, ok).await?;
+                if ok {
+                    println!(
+                        "Paired with {}. It may send you files; allow more with `crossdrop allow`.",
+                        request.peer_name
+                    );
+                } else {
+                    println!("Rejected.");
+                }
+            }
+            Pending::Offer(offer) => {
+                connect().await?.offer_answer(&offer.offer_id, true).await?;
+                println!("Receiving {} file(s) from {}.", offer.files, offer.peer_name);
+            }
+        },
+
+        Command::Reject { id } => match pick_request(&mut connect().await?, id).await? {
+            Pending::Pair(request) => {
+                connect().await?.pair_answer(&request.pair_id, false).await?;
+                println!("Rejected pairing with {}.", request.peer_name);
+            }
+            Pending::Offer(offer) => {
+                connect().await?.offer_answer(&offer.offer_id, false).await?;
+                println!("Declined the files from {}.", offer.peer_name);
+            }
+        },
 
         Command::Send { files, to } => {
             let mut stream = connect().await?.open_channel(&to, "crossdrop/files").await?;
-            let total: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
             let started = Instant::now();
             let mut last = Instant::now();
-            let mut progress = |name: &str, sent: u64, size: u64| {
-                if sent == size || last.elapsed().as_millis() > 100 {
-                    last = Instant::now();
-                    let pct = (sent * 100).checked_div(size).unwrap_or(100);
-                    eprint!("\r\x1b[K{name}  {pct:>3}%  {}", human(sent));
-                    if sent == size {
-                        eprintln!();
+            let mut on_event = |event: SendEvent<'_>| match event {
+                SendEvent::Waiting { files, bytes } => {
+                    eprintln!("Offering {files} file(s), {} to {to}…", human(bytes));
+                }
+                SendEvent::Accepted { resumed } => {
+                    if resumed > 0 {
+                        eprintln!("Accepted. Resuming: {} already there.", human(resumed));
+                    }
+                }
+                SendEvent::Progress { path, done, total } => {
+                    if done == total || last.elapsed().as_millis() > 100 {
+                        last = Instant::now();
+                        let pct = (done * 100).checked_div(total).unwrap_or(100);
+                        eprint!("\r\x1b[K{pct:>3}%  {} / {}  {path}", human(done), human(total));
+                        if done == total {
+                            eprintln!();
+                        }
                     }
                 }
             };
-            let n = send_files(&mut stream, &files, &mut progress).await?;
+            let report = match send_files(&mut stream, &files, &mut on_event).await {
+                Ok(r) => r,
+                Err(e) if e.downcast_ref::<Declined>().is_some() => bail!("{to} declined the files"),
+                Err(e) => return Err(e),
+            };
             let secs = started.elapsed().as_secs_f64().max(0.001);
-            println!("Sent {n} file(s), {} in {secs:.1}s ({}/s).", human(total), human((total as f64 / secs) as u64));
+            println!(
+                "Sent {} file(s), {} in {secs:.1}s ({}/s).",
+                report.received,
+                human(report.bytes_sent),
+                human((report.bytes_sent as f64 / secs) as u64)
+            );
+        }
+
+        Command::Clip(Clip::Send { text, to }) => {
+            let text = match text {
+                Some(t) => t,
+                None => {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                    buf
+                }
+            };
+            if text.is_empty() {
+                bail!("nothing to send");
+            }
+            let n = connect().await?.clipboard_send(&text, to.as_deref()).await?;
+            println!("Shared with {n} device(s).");
+        }
+
+        Command::Clip(Clip::Get) => match connect().await?.clipboard_get().await? {
+            Some((text, _from)) => print!("{text}"),
+            None => bail!("nothing received yet"),
+        },
+
+        Command::AutoAccept { device, off } => {
+            connect().await?.set_auto_accept(&device, !off).await?;
+            if off {
+                println!("Files from {device} will wait for `crossdrop accept`.");
+            } else {
+                println!("Files from {device} are now accepted automatically.");
+            }
         }
 
         Command::Allow { device, service } => {
@@ -263,17 +358,26 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-async fn pick_request(client: &mut Client, pair_id: Option<String>) -> Result<crossdrop_proto::ipc::PairRequestInfo> {
-    let mut requests = client.pair_requests().await?;
-    match pair_id {
-        Some(id) => requests
-            .into_iter()
-            .find(|r| r.pair_id.starts_with(&id))
-            .ok_or_else(|| anyhow::anyhow!("no pairing request {id}")),
-        None => match requests.len() {
-            0 => bail!("no pending pairing request"),
-            1 => Ok(requests.remove(0)),
-            _ => bail!("several requests are pending; pass one of the ids from `crossdrop requests`"),
-        },
+enum Pending {
+    Pair(PairRequestInfo),
+    Offer(OfferInfo),
+}
+
+/// Finds a pending pairing request or transfer by id prefix, or the only one.
+async fn pick_request(client: &mut Client, id: Option<String>) -> Result<Pending> {
+    let mut all: Vec<(String, Pending)> = Vec::new();
+    for r in client.pair_requests().await? {
+        all.push((r.pair_id.clone(), Pending::Pair(r)));
+    }
+    for o in client.offers().await? {
+        all.push((o.offer_id.clone(), Pending::Offer(o)));
+    }
+    if let Some(id) = id {
+        all.retain(|(key, _)| key.starts_with(&id));
+    }
+    match all.len() {
+        0 => bail!("nothing waiting with that id; see `crossdrop requests`"),
+        1 => Ok(all.remove(0).1),
+        _ => bail!("several requests are waiting; pass an id from `crossdrop requests`"),
     }
 }

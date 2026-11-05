@@ -19,6 +19,9 @@ pub struct Config {
     pub download_dir: PathBuf,
     /// Announce and discover devices with mDNS.
     pub mdns: bool,
+    /// Watch the system clipboard and share it with devices allowed
+    /// `crossdrop/clipboard`, and apply what they share.
+    pub clipboard_sync: bool,
 }
 
 impl Default for Config {
@@ -28,6 +31,7 @@ impl Default for Config {
             port: crossdrop_proto::DEFAULT_PORT,
             download_dir: crossdrop_sdk::paths::default_download_dir(),
             mdns: true,
+            clipboard_sync: true,
         }
     }
 }
@@ -67,11 +71,19 @@ pub struct TrustedDevice {
     /// Last known addresses, used when mDNS is unavailable.
     #[serde(default)]
     pub addrs: Vec<String>,
+    /// Store files from this device without asking.
+    #[serde(default)]
+    pub auto_accept: bool,
 }
 
 impl TrustedDevice {
     pub fn new(name: String, addr: Option<String>) -> Self {
-        Self { name, permissions: vec![services::FILES.to_string()], addrs: addr.into_iter().collect() }
+        Self {
+            name,
+            permissions: vec![services::FILES.to_string()],
+            addrs: addr.into_iter().collect(),
+            auto_accept: false,
+        }
     }
 
     pub fn allows(&self, service: &str) -> bool {

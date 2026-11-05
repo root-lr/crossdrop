@@ -8,23 +8,33 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_core::{open_channel, peer_id, sas, Channel, Connection, DeviceId, Discovered, Node, PendingChannel};
-use crossdrop_proto::ipc::{DeviceInfo, Event, PairRequestInfo, Request, Response};
-use crossdrop_proto::wire::Pair;
+use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
+use crossdrop_proto::wire::{Clipboard, Pair};
 use crossdrop_proto::{read_frame, services, write_frame};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
+use crate::clipboard::SystemClipboard;
 use crate::config::{Config, TrustStore, TrustedDevice};
 
 /// How long a user has to compare pairing codes.
 const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long an opened channel waits for its client to attach.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an incoming transfer waits for the user to accept it.
+const OFFER_TIMEOUT: Duration = Duration::from_secs(300);
+/// How often the system clipboard is checked for changes.
+const CLIPBOARD_POLL: Duration = Duration::from_millis(500);
 
 struct OutgoingPair {
     conn: Connection,
     peer: DeviceId,
+}
+
+struct PendingOffer {
+    info: OfferInfo,
+    decision: oneshot::Sender<bool>,
 }
 
 struct IncomingPair {
@@ -44,11 +54,17 @@ pub(crate) struct Daemon {
     incoming_pairs: Mutex<HashMap<String, IncomingPair>>,
     services: Mutex<HashMap<String, mpsc::UnboundedSender<Event>>>,
     channels: Mutex<HashMap<String, Channel>>,
+    offers: Mutex<HashMap<String, PendingOffer>>,
+    clipboard: Option<SystemClipboard>,
+    /// Last clipboard text seen locally or applied from a peer (loop guard).
+    clip_known: Mutex<Option<String>>,
+    /// Last text received from a peer, with the sender's name.
+    clip_received: Mutex<Option<(String, String)>>,
     counter: AtomicU64,
 }
 
 impl Daemon {
-    pub fn new(config: Config, node: Node, trust: TrustStore) -> Arc<Self> {
+    pub fn new(config: Config, node: Node, trust: TrustStore, clipboard: Option<SystemClipboard>) -> Arc<Self> {
         Arc::new(Self {
             config,
             node,
@@ -59,6 +75,10 @@ impl Daemon {
             incoming_pairs: Mutex::default(),
             services: Mutex::default(),
             channels: Mutex::default(),
+            offers: Mutex::default(),
+            clipboard,
+            clip_known: Mutex::default(),
+            clip_received: Mutex::default(),
             counter: AtomicU64::new(0),
         })
     }
@@ -139,8 +159,21 @@ impl Daemon {
         }
         if service == services::FILES {
             let mut io = pending.accept().await?.into_io();
-            let n = crate::files::receive(&mut io, &self.config.download_dir, &device.name).await?;
-            info!(from = %device.name, files = n, dir = %self.config.download_dir.display(), "transfer complete");
+            let offer = crate::files::read_offer(&mut io).await?;
+            let accepted = device.auto_accept || self.ask_offer(peer, &device.name, &offer).await;
+            if !accepted {
+                info!(from = %device.name, "transfer declined");
+                return crate::files::decline(&mut io).await;
+            }
+            let dir = &self.config.download_dir;
+            let n = crate::files::receive(&mut io, offer, dir, &peer.to_string(), &device.name).await?;
+            info!(from = %device.name, files = n, dir = %dir.display(), "transfer complete");
+            return Ok(());
+        }
+        if service == services::CLIPBOARD {
+            let mut io = pending.accept().await?.into_io();
+            let Clipboard { text } = read_frame(&mut io).await?;
+            self.apply_remote_clipboard(text, device.name.clone());
             return Ok(());
         }
         let handler = self.services.lock().unwrap().get(&service).filter(|tx| !tx.is_closed()).cloned();
@@ -245,6 +278,103 @@ impl Daemon {
             return t.name;
         }
         self.discovered.lock().unwrap().get(&id).map(|d| d.name.clone()).unwrap_or_else(|| "unknown".into())
+    }
+
+    /// Puts an incoming transfer in the inbox and waits for the user.
+    async fn ask_offer(&self, peer: DeviceId, name: &str, offer: &crate::files::Offer) -> bool {
+        let offer_id = self.new_token();
+        let info = OfferInfo {
+            offer_id: offer_id.clone(),
+            peer_id: peer.to_string(),
+            peer_name: name.to_string(),
+            files: offer.entries.len() as u32,
+            total_bytes: offer.total_bytes(),
+            preview: offer.entries.iter().take(5).map(|e| e.path.clone()).collect(),
+        };
+        let (tx, rx) = oneshot::channel();
+        self.offers.lock().unwrap().insert(offer_id.clone(), PendingOffer { info, decision: tx });
+        info!(from = %name, files = offer.entries.len(), "incoming files: run `crossdrop requests`");
+        let accepted = matches!(tokio::time::timeout(OFFER_TIMEOUT, rx).await, Ok(Ok(true)));
+        self.offers.lock().unwrap().remove(&offer_id);
+        accepted
+    }
+
+    // ---------------------------------------------------------------- clipboard
+
+    fn apply_remote_clipboard(&self, text: String, from: String) {
+        info!(%from, chars = text.chars().count(), "clipboard received");
+        *self.clip_known.lock().unwrap() = Some(text.clone());
+        if self.config.clipboard_sync {
+            if let Some(cb) = &self.clipboard {
+                cb.set(text.clone());
+            }
+        }
+        *self.clip_received.lock().unwrap() = Some((text, from));
+    }
+
+    /// Watches the system clipboard and shares every new text.
+    pub async fn clipboard_loop(self: Arc<Self>) {
+        let Some(cb) = self.clipboard.clone() else { return };
+        // Whatever is there at startup is not a "copy" by the user.
+        *self.clip_known.lock().unwrap() = cb.get().await;
+        loop {
+            tokio::time::sleep(CLIPBOARD_POLL).await;
+            let Some(text) = cb.get().await else { continue };
+            if text.is_empty() || self.clip_known.lock().unwrap().as_deref() == Some(text.as_str()) {
+                continue;
+            }
+            *self.clip_known.lock().unwrap() = Some(text.clone());
+            let n = self.broadcast_clipboard(text).await;
+            debug!(devices = n, "clipboard shared");
+        }
+    }
+
+    /// Paired devices this device shares its clipboard with.
+    fn clipboard_peers(&self) -> Vec<DeviceId> {
+        self.trust
+            .lock()
+            .unwrap()
+            .devices
+            .iter()
+            .filter(|(_, d)| d.allows(services::CLIPBOARD))
+            .filter_map(|(id, _)| id.parse().ok())
+            .collect()
+    }
+
+    async fn send_clipboard(self: &Arc<Self>, peer: DeviceId, text: String) -> Result<()> {
+        let conn = tokio::time::timeout(Duration::from_secs(3), self.connection_to(peer))
+            .await
+            .map_err(|_| anyhow!("{} did not answer", self.device_name(peer)))??;
+        let mut io = open_channel(&conn, services::CLIPBOARD).await?.into_io();
+        write_frame(&mut io, &Clipboard { text }).await?;
+        io.shutdown().await?;
+        Ok(())
+    }
+
+    /// Sends `text` to every clipboard peer; returns how many got it.
+    async fn broadcast_clipboard(self: &Arc<Self>, text: String) -> u32 {
+        let tasks: Vec<_> = self
+            .clipboard_peers()
+            .into_iter()
+            .map(|peer| {
+                let this = self.clone();
+                let text = text.clone();
+                tokio::spawn(async move {
+                    let r = this.send_clipboard(peer, text).await;
+                    if let Err(e) = &r {
+                        debug!(peer = %peer.short(), "clipboard not delivered: {e:#}");
+                    }
+                    r.is_ok()
+                })
+            })
+            .collect();
+        let mut n = 0;
+        for t in tasks {
+            if matches!(t.await, Ok(true)) {
+                n += 1;
+            }
+        }
+        n
     }
 
     // ---------------------------------------------------------------- pairing
@@ -428,6 +558,47 @@ impl Daemon {
                 let channel = open_channel(&conn, &service).await?;
                 Ok(Response::ChannelReady { channel_id: self.park_channel(channel) })
             }
+            Request::ListOffers => {
+                let offers = self.offers.lock().unwrap().values().map(|o| o.info.clone()).collect();
+                Ok(Response::Offers { offers })
+            }
+            Request::OfferAnswer { offer_id, accept } => {
+                let offer = self.offers.lock().unwrap().remove(&offer_id);
+                let offer = offer.ok_or_else(|| anyhow!("no incoming transfer with id {offer_id}"))?;
+                let _ = offer.decision.send(accept);
+                Ok(Response::Ok)
+            }
+            Request::SetAutoAccept { device, enabled } => {
+                let id = self.resolve_device(&device)?;
+                let mut trust = self.trust.lock().unwrap();
+                let entry = trust.devices.get_mut(&id.to_string()).ok_or_else(|| anyhow!("{device} is not paired"))?;
+                entry.auto_accept = enabled;
+                trust.save()?;
+                Ok(Response::Ok)
+            }
+            Request::ClipboardSend { text, device } => match device {
+                Some(device) => {
+                    let id = self.resolve_device(&device)?;
+                    if self.trusted(id).is_none() {
+                        bail!("{device} is not paired");
+                    }
+                    self.send_clipboard(id, text).await?;
+                    Ok(Response::Sent { count: 1 })
+                }
+                None => {
+                    if self.clipboard_peers().is_empty() {
+                        bail!("no device shares the clipboard with this one; run `crossdrop allow <device> clipboard`");
+                    }
+                    Ok(Response::Sent { count: self.broadcast_clipboard(text).await })
+                }
+            },
+            Request::ClipboardGet => {
+                let (text, from) = match self.clip_received.lock().unwrap().clone() {
+                    Some((t, f)) => (Some(t), Some(f)),
+                    None => (None, None),
+                };
+                Ok(Response::Clipboard { text, from })
+            }
             Request::Register { .. } | Request::Attach { .. } => bail!("must be the first request of a connection"),
         }
     }
@@ -447,6 +618,7 @@ impl Daemon {
                     paired: true,
                     online: false,
                     permissions: d.permissions.clone(),
+                    auto_accept: d.auto_accept,
                 },
             );
         }
@@ -458,6 +630,7 @@ impl Daemon {
                 paired: false,
                 online: false,
                 permissions: vec![],
+                auto_accept: false,
             });
             for a in &d.addrs {
                 let a = a.to_string();

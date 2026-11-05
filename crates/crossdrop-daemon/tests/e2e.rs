@@ -5,7 +5,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crossdrop_daemon::{start, Handle, Options};
-use crossdrop_sdk::{files::send_files, Client, Paths};
+use crossdrop_sdk::files::{send_files, Declined, SendEvent};
+use crossdrop_sdk::{Client, Paths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn daemon(dir: &Path, name: &str) -> Handle {
@@ -15,6 +16,7 @@ async fn daemon(dir: &Path, name: &str) -> Handle {
         port: Some(0),
         mdns: Some(false),
         download_dir: Some(dir.join(name).join("downloads")),
+        clipboard_sync: Some(false),
     })
     .await
     .unwrap()
@@ -68,19 +70,49 @@ async fn pair_send_files_and_extension() {
     let devices = client(&b).await.devices().await.unwrap();
     assert!(devices.iter().any(|d| d.paired && d.name == "alpha"));
 
-    // Files: A sends two files, by device name.
+    // Files: A sends a file and a folder, by device name. B accepts by hand.
     let src = dir.path().join("src");
-    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(src.join("photos").join("2026")).unwrap();
     let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
     std::fs::write(src.join("big.bin"), &big).unwrap();
-    std::fs::write(src.join("note.txt"), "bonjour").unwrap();
+    std::fs::write(src.join("photos").join("2026").join("a.jpg"), "jpeg").unwrap();
+    let accept = tokio::spawn(answer_next_offer(client(&b).await, true));
     let mut stream = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
-    let mut progress = |_: &str, _: u64, _: u64| {};
-    let n = send_files(&mut stream, &[src.join("big.bin"), src.join("note.txt")], &mut progress).await.unwrap();
-    assert_eq!(n, 2);
+    let mut events = |_: SendEvent<'_>| {};
+    let report = send_files(&mut stream, &[src.join("big.bin"), src.join("photos")], &mut events).await.unwrap();
+    assert_eq!(report.received, 2);
+    let offer = accept.await.unwrap();
+    assert_eq!((offer.files, offer.peer_name.as_str()), (2, "alpha"));
     let downloads = dir.path().join("bravo").join("downloads");
     assert_eq!(std::fs::read(downloads.join("big.bin")).unwrap(), big);
-    assert_eq!(std::fs::read_to_string(downloads.join("note.txt")).unwrap(), "bonjour");
+    assert_eq!(std::fs::read_to_string(downloads.join("photos/2026/a.jpg")).unwrap(), "jpeg");
+
+    // Declined transfer.
+    let decline = tokio::spawn(answer_next_offer(client(&b).await, false));
+    let mut stream = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
+    let err = send_files(&mut stream, &[src.join("big.bin")], &mut events).await.unwrap_err();
+    assert!(err.downcast_ref::<Declined>().is_some(), "{err}");
+    decline.await.unwrap();
+
+    // Auto-accept: no question asked.
+    client(&b).await.set_auto_accept("alpha", true).await.unwrap();
+    let mut stream = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
+    send_files(&mut stream, &[src.join("big.bin")], &mut events).await.unwrap();
+    assert_eq!(std::fs::read(downloads.join("big (1).bin")).unwrap(), big);
+
+    // Clipboard: refused until B allows it, then delivered.
+    let err = client(&a).await.clipboard_send("secret", Some("bravo")).await.unwrap_err();
+    assert!(err.to_string().contains("permission denied"), "{err}");
+    client(&b).await.set_permission("alpha", "crossdrop/clipboard", true).await.unwrap();
+    assert_eq!(client(&a).await.clipboard_send("bonjour", Some("bravo")).await.unwrap(), 1);
+    let (text, from) = client(&b).await.clipboard_get().await.unwrap().unwrap();
+    assert_eq!((text.as_str(), from.as_str()), ("bonjour", "alpha"));
+    // Broadcast from B reaches alpha only once alpha allows bravo too.
+    assert_eq!(client(&b).await.clipboard_send("salut", None).await.unwrap(), 0);
+    client(&a).await.set_permission("bravo", "crossdrop/clipboard", true).await.unwrap();
+    assert_eq!(client(&b).await.clipboard_send("salut", None).await.unwrap(), 1);
+    let (text, from) = client(&a).await.clipboard_get().await.unwrap().unwrap();
+    assert_eq!((text.as_str(), from.as_str()), ("salut", "bravo"));
 
     // Extension: B serves "test/echo", but A is not allowed to use it yet.
     let mut reg = client(&b).await.register("test/echo").await.unwrap();
@@ -113,6 +145,17 @@ async fn pair_send_files_and_extension() {
 
     a.shutdown();
     b.shutdown();
+}
+
+/// Waits for the next incoming transfer on `c` and answers it.
+async fn answer_next_offer(mut c: Client, accept: bool) -> crossdrop_proto::ipc::OfferInfo {
+    loop {
+        if let Some(o) = c.offers().await.unwrap().pop() {
+            c.offer_answer(&o.offer_id, accept).await.unwrap();
+            return o;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]

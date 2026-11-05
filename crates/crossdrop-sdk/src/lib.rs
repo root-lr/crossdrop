@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use crossdrop_proto::ipc::{DeviceInfo, Event, PairRequestInfo, Request, Response};
+use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
 use crossdrop_proto::{read_frame, write_frame};
 
 pub mod files;
@@ -147,6 +147,43 @@ impl Client {
         let req = Request::SetPermission { device: device.into(), service: service.into(), allow };
         self.request(&req).await?;
         Ok(())
+    }
+
+    /// Incoming file transfers waiting for a decision.
+    pub async fn offers(&mut self) -> Result<Vec<OfferInfo>> {
+        match self.request(&Request::ListOffers).await? {
+            Response::Offers { offers } => Ok(offers),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn offer_answer(&mut self, offer_id: &str, accept: bool) -> Result<()> {
+        self.request(&Request::OfferAnswer { offer_id: offer_id.into(), accept }).await?;
+        Ok(())
+    }
+
+    /// Store files from `device` without asking.
+    pub async fn set_auto_accept(&mut self, device: &str, enabled: bool) -> Result<()> {
+        self.request(&Request::SetAutoAccept { device: device.into(), enabled }).await?;
+        Ok(())
+    }
+
+    /// Sends text to one device, or to all clipboard peers. Returns how many received it.
+    pub async fn clipboard_send(&mut self, text: &str, device: Option<&str>) -> Result<u32> {
+        let req = Request::ClipboardSend { text: text.into(), device: device.map(Into::into) };
+        match self.request(&req).await? {
+            Response::Sent { count } => Ok(count),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Last text received from another device, with its sender's name.
+    pub async fn clipboard_get(&mut self) -> Result<Option<(String, String)>> {
+        match self.request(&Request::ClipboardGet).await? {
+            Response::Clipboard { text: Some(text), from } => Ok(Some((text, from.unwrap_or_default()))),
+            Response::Clipboard { text: None, .. } => Ok(None),
+            other => Err(unexpected(other)),
+        }
     }
 
     /// Opens a channel to `device` for `service` and returns a raw byte stream.

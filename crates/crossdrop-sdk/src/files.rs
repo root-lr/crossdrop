@@ -1,69 +1,190 @@
 //! Sending side of the `crossdrop/files` service.
 //!
-//! Protocol, over one channel:
-//! `File{name,size}` frame, `size` raw bytes, `FileEnd{blake3}` frame — per
-//! file — then `End`. The receiver answers `Done{received}` or `Error`.
+//! `Offer` (every file with its relative path) → the receiver answers with
+//! `Answer { accepted, offsets }`, `offsets[i]` being what it already holds
+//! from an interrupted transfer. Then, per file, the bytes from that offset
+//! to the end followed by `FileEnd { blake3 }` (hash of the whole file), and
+//! finally `End` → `Done` / `Error`.
 
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use anyhow::{bail, Context, Result};
-use crossdrop_proto::wire::Files;
+use crossdrop_proto::wire::{FileEntry, Files};
 use crossdrop_proto::{read_frame, write_frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-const CHUNK: usize = 64 * 1024;
+const CHUNK: usize = 256 * 1024;
 
-/// Progress callback: `(file name, bytes sent for this file, file size)`.
-pub type Progress<'a> = &'a mut (dyn FnMut(&str, u64, u64) + Send);
+/// What happens during a transfer, for progress display.
+#[derive(Debug)]
+pub enum SendEvent<'a> {
+    /// The offer is out; the receiver may have to accept it by hand.
+    Waiting { files: usize, bytes: u64 },
+    /// Accepted. `resumed` bytes were already on the other side.
+    Accepted { resumed: u64 },
+    /// `done` of `total` bytes of the whole transfer, currently in `path`.
+    Progress { path: &'a str, done: u64, total: u64 },
+}
 
-/// Sends regular files over an open `crossdrop/files` channel.
-/// Returns how many files the receiver stored.
-pub async fn send_files<S>(io: &mut S, files: &[PathBuf], progress: Progress<'_>) -> Result<u32>
+/// Outcome of [`send_files`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendReport {
+    pub received: u32,
+    /// Bytes that went over the network.
+    pub bytes_sent: u64,
+    /// Bytes skipped because the receiver already had them.
+    pub resumed: u64,
+}
+
+/// Error returned when the receiver declines the transfer.
+#[derive(Debug)]
+pub struct Declined;
+
+impl std::fmt::Display for Declined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the other device declined the transfer")
+    }
+}
+
+impl std::error::Error for Declined {}
+
+/// Lists the files to send: plain files as-is, folders recursively (symbolic
+/// links are skipped). Returns entries with their source paths.
+pub fn collect(paths: &[PathBuf]) -> Result<Vec<(FileEntry, PathBuf)>> {
+    let mut out = Vec::new();
+    let mut roots = std::collections::HashSet::new();
+    for path in paths {
+        let meta = std::fs::symlink_metadata(path).with_context(|| format!("{}", path.display()))?;
+        let root = root_name(path)?;
+        if !roots.insert(root.clone()) {
+            bail!("two items are named {root:?}; rename one of them");
+        }
+        if meta.is_file() {
+            out.push((entry(root, &meta), path.clone()));
+        } else if meta.is_dir() {
+            let before = out.len();
+            walk(path, &root, &mut out)?;
+            out[before..].sort_by(|a, b| a.0.path.cmp(&b.0.path));
+        } else {
+            bail!("{} is not a file or a folder", path.display());
+        }
+    }
+    Ok(out)
+}
+
+fn root_name(path: &Path) -> Result<String> {
+    let name = match path.file_name() {
+        Some(n) => n.to_owned(),
+        None => std::fs::canonicalize(path)?.file_name().map(|n| n.to_owned()).unwrap_or_default(),
+    };
+    let name = name.to_string_lossy().into_owned();
+    if name.is_empty() {
+        bail!("{} has no name", path.display());
+    }
+    Ok(name)
+}
+
+fn entry(path: String, meta: &std::fs::Metadata) -> FileEntry {
+    let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    FileEntry { path, size: meta.len(), mtime }
+}
+
+fn walk(dir: &Path, rel: &str, out: &mut Vec<(FileEntry, PathBuf)>) -> Result<()> {
+    for item in std::fs::read_dir(dir).with_context(|| format!("{}", dir.display()))? {
+        let item = item?;
+        let meta = std::fs::symlink_metadata(item.path())?;
+        let name = item.file_name().to_string_lossy().into_owned();
+        let child = format!("{rel}/{name}");
+        if meta.is_file() {
+            out.push((entry(child, &meta), item.path()));
+        } else if meta.is_dir() {
+            walk(&item.path(), &child, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Sends files and folders over an open `crossdrop/files` channel.
+pub async fn send_files<S>(
+    io: &mut S,
+    paths: &[PathBuf],
+    on_event: &mut (dyn FnMut(SendEvent<'_>) + Send),
+) -> Result<SendReport>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    for path in files {
-        send_one(io, path, progress).await?;
+    let items = collect(paths)?;
+    if items.is_empty() {
+        bail!("nothing to send (empty folders only)");
+    }
+    let total: u64 = items.iter().map(|(e, _)| e.size).sum();
+    let entries: Vec<FileEntry> = items.iter().map(|(e, _)| e.clone()).collect();
+    write_frame(io, &Files::Offer { entries }).await?;
+    on_event(SendEvent::Waiting { files: items.len(), bytes: total });
+
+    let offsets = match read_frame::<_, Files>(io).await? {
+        Files::Answer { accepted: false, .. } => return Err(Declined.into()),
+        Files::Answer { accepted: true, offsets } if offsets.len() == items.len() => offsets,
+        Files::Error { message } => bail!("receiver error: {message}"),
+        other => bail!("unexpected answer: {other:?}"),
+    };
+    let resumed: u64 = items.iter().zip(&offsets).map(|((e, _), o)| (*o).min(e.size)).sum();
+    on_event(SendEvent::Accepted { resumed });
+
+    let mut done = resumed;
+    let mut buf = vec![0u8; CHUNK];
+    for ((entry, source), offset) in items.iter().zip(offsets) {
+        let offset = offset.min(entry.size);
+        let mut file = tokio::fs::File::open(source).await.with_context(|| format!("{}", source.display()))?;
+        let mut hasher = blake3::Hasher::new();
+        let mut pos = 0u64;
+        while pos < entry.size {
+            let want = CHUNK.min((entry.size - pos) as usize);
+            let n = file.read(&mut buf[..want]).await?;
+            if n == 0 {
+                bail!("{} changed while being sent", source.display());
+            }
+            hasher.update(&buf[..n]);
+            let end = pos + n as u64;
+            if end > offset {
+                let from = offset.saturating_sub(pos) as usize;
+                io.write_all(&buf[from..n]).await?;
+                done += (n - from) as u64;
+                on_event(SendEvent::Progress { path: &entry.path, done, total });
+            }
+            pos = end;
+        }
+        write_frame(io, &Files::FileEnd { blake3: hasher.finalize().to_hex().to_string() }).await?;
     }
     write_frame(io, &Files::End).await?;
+    io.flush().await?;
     match read_frame::<_, Files>(io).await? {
-        Files::Done { received } => Ok(received),
+        Files::Done { received } => Ok(SendReport { received, bytes_sent: total - resumed, resumed }),
         Files::Error { message } => bail!("receiver error: {message}"),
         other => bail!("unexpected answer: {other:?}"),
     }
 }
 
-async fn send_one<S>(io: &mut S, path: &Path, progress: Progress<'_>) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let meta = tokio::fs::metadata(path).await.with_context(|| format!("{}", path.display()))?;
-    if !meta.is_file() {
-        bail!("{} is not a regular file (folders arrive in v0.2)", path.display());
-    }
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .with_context(|| format!("{} has no file name", path.display()))?;
-    let size = meta.len();
-    write_frame(io, &Files::File { name: name.clone(), size }).await?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = vec![0u8; CHUNK];
-    let mut sent = 0u64;
-    while sent < size {
-        let want = CHUNK.min((size - sent) as usize);
-        let n = file.read(&mut buf[..want]).await?;
-        if n == 0 {
-            bail!("{} shrank while being sent", path.display());
-        }
-        hasher.update(&buf[..n]);
-        io.write_all(&buf[..n]).await?;
-        sent += n as u64;
-        progress(&name, sent, size);
+    #[test]
+    fn collect_walks_folders_and_rejects_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        std::fs::create_dir_all(photos.join("2026")).unwrap();
+        std::fs::write(photos.join("b.jpg"), "b").unwrap();
+        std::fs::write(photos.join("2026").join("a.jpg"), "aa").unwrap();
+        std::fs::create_dir_all(photos.join("empty")).unwrap();
+        std::fs::write(dir.path().join("note.txt"), "n").unwrap();
+
+        let items = collect(&[photos.clone(), dir.path().join("note.txt")]).unwrap();
+        let paths: Vec<&str> = items.iter().map(|(e, _)| e.path.as_str()).collect();
+        assert_eq!(paths, ["photos/2026/a.jpg", "photos/b.jpg", "note.txt"]);
+        assert_eq!(items[0].0.size, 2);
+
+        assert!(collect(&[photos.clone(), photos]).is_err());
     }
-    write_frame(io, &Files::FileEnd { blake3: hasher.finalize().to_hex().to_string() }).await?;
-    io.flush().await?;
-    Ok(())
 }

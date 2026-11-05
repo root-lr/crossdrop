@@ -9,10 +9,11 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+arboard = { version = "3.7.0", default-features = false }
 blake3 = "1.8.7"
-crossdrop-core = { version = "0.1.0", path = "../crossdrop-core" }
-crossdrop-proto = { version = "0.1.0", path = "../crossdrop-proto" }
-crossdrop-sdk = { version = "0.1.0", path = "../crossdrop-sdk" }
+crossdrop-core = { version = "0.2.0", path = "../crossdrop-core" }
+crossdrop-proto = { version = "0.2.0", path = "../crossdrop-proto" }
+crossdrop-sdk = { version = "0.2.0", path = "../crossdrop-sdk" }
 quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

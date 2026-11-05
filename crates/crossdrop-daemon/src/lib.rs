@@ -4,6 +4,7 @@
 //! built-in services and exposes the local API used by the CLI, the app and
 //! extensions such as interdesk.
 
+mod clipboard;
 mod config;
 mod daemon;
 mod files;
@@ -28,6 +29,8 @@ pub struct Options {
     pub port: Option<u16>,
     pub mdns: Option<bool>,
     pub download_dir: Option<PathBuf>,
+    /// Override `clipboard_sync` (tests turn it off).
+    pub clipboard_sync: Option<bool>,
 }
 
 /// A running daemon. Dropping it does not stop it; call [`Handle::shutdown`].
@@ -72,15 +75,22 @@ pub async fn start(opts: Options) -> Result<Handle> {
     if let Some(dir) = opts.download_dir {
         config.download_dir = dir;
     }
+    if let Some(sync) = opts.clipboard_sync {
+        config.clipboard_sync = sync;
+    }
 
     let identity = Identity::load_or_generate(&paths.home)?;
     let listener = ipc::bind(&paths)?;
     let node = Node::bind(&identity, SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.port)))?;
     let port = node.local_addr()?.port();
     let trust = TrustStore::load(&paths.trust_file())?;
-    let daemon = daemon::Daemon::new(config.clone(), node.clone(), trust);
+    let system_clipboard = if config.clipboard_sync { clipboard::SystemClipboard::start() } else { None };
+    if config.clipboard_sync && system_clipboard.is_none() {
+        tracing::warn!("no system clipboard here; `crossdrop clip send/get` still work");
+    }
+    let daemon = daemon::Daemon::new(config.clone(), node.clone(), trust, system_clipboard);
 
-    let mut tasks = vec![tokio::spawn(daemon.clone().accept_loop())];
+    let mut tasks = vec![tokio::spawn(daemon.clone().accept_loop()), tokio::spawn(daemon.clone().clipboard_loop())];
     let ipc_path = listener.path();
     tasks.push(tokio::spawn(listener.serve(daemon.clone())));
 
