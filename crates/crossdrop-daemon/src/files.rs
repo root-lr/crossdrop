@@ -26,6 +26,8 @@ const PARTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 *
 /// A validated offer.
 pub struct Offer {
     pub entries: Vec<FileEntry>,
+    /// The sender would like the files on the desktop.
+    pub desktop: bool,
     /// Sanitized path components of each entry.
     parts: Vec<Vec<String>>,
 }
@@ -38,15 +40,15 @@ impl Offer {
 
 /// Reads and validates the sender's offer.
 pub async fn read_offer<S: AsyncRead + Unpin>(io: &mut S) -> Result<Offer> {
-    let entries = match read_frame::<_, Files>(io).await? {
-        Files::Offer { entries } => entries,
+    let (entries, desktop) = match read_frame::<_, Files>(io).await? {
+        Files::Offer { entries, desktop } => (entries, desktop),
         other => bail!("expected an offer, got {other:?}"),
     };
     if entries.is_empty() || entries.len() > MAX_ENTRIES {
         bail!("offer with {} files refused", entries.len());
     }
     let parts = entries.iter().map(|e| sanitize_path(&e.path)).collect::<Result<Vec<_>>>()?;
-    Ok(Offer { entries, parts })
+    Ok(Offer { entries, desktop, parts })
 }
 
 pub async fn decline<S: AsyncWrite + Unpin>(io: &mut S) -> Result<()> {

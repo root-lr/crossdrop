@@ -17,6 +17,8 @@ pub struct Config {
     pub port: u16,
     /// Folder where received files land.
     pub download_dir: PathBuf,
+    /// Where files dragged from a neighbouring screen land.
+    pub desktop_dir: PathBuf,
     /// Announce and discover devices with mDNS.
     pub mdns: bool,
     /// Watch the system clipboard and share it with devices allowed
@@ -30,6 +32,7 @@ impl Default for Config {
             name: hostname(),
             port: crossdrop_proto::DEFAULT_PORT,
             download_dir: crossdrop_sdk::paths::default_download_dir(),
+            desktop_dir: dirs::desktop_dir().unwrap_or_else(crossdrop_sdk::paths::default_download_dir),
             mdns: true,
             clipboard_sync: true,
         }

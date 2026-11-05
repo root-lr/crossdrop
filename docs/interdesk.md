@@ -31,7 +31,8 @@ Then run interdesk on both:
 interdesk run
 ```
 
-Every computer can be both: it controls its own neighbours and accepts
+The [desktop app](../README.md#desktop-app) does the same with a switch and a
+desk map. Every computer can be both: it controls its own neighbours and accepts
 control from the devices it allowed. Run `interdesk layout` to see the
 configuration; it lives in `interdesk.toml` in the crossdrop data directory.
 
@@ -75,4 +76,8 @@ cursor reaches the right edge
   bounding box).
 - The clipboard follows through crossdrop's clipboard sharing
   (`crossdrop allow <device> clipboard`), not on each switch.
-- Dragging a file to another screen arrives in v0.4.
+- The cursor does not change screens while a mouse button is held (a drag or
+  a text selection). To move a file to a neighbour, use the desktop app: drag
+  the file to that screen edge and drop it on the yellow zone; it lands on
+  the neighbour's desktop (allowed because that device may already drive the
+  neighbour).

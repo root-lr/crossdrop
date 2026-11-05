@@ -8,7 +8,7 @@
 //! - Events we inject are flagged by Windows and ignored by our own hooks.
 
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{bail, Result};
@@ -41,6 +41,8 @@ static EVENTS: OnceLock<UnboundedSender<Input>> = OnceLock::new();
 static GRABBED: AtomicBool = AtomicBool::new(false);
 static CENTER_X: AtomicI32 = AtomicI32::new(0);
 static CENTER_Y: AtomicI32 = AtomicI32::new(0);
+/// Bits of the physical buttons currently held (left, right, middle).
+static BUTTONS: AtomicU8 = AtomicU8::new(0);
 
 struct Win;
 
@@ -68,8 +70,18 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             let grabbed = GRABBED.load(Ordering::Relaxed);
             let (x, y) = (info.pt.x, info.pt.y);
             let high = (info.mouseData >> 16) as u16;
+            match wparam as u32 {
+                WM_LBUTTONDOWN => BUTTONS.fetch_or(1, Ordering::Relaxed),
+                WM_LBUTTONUP => BUTTONS.fetch_and(!1, Ordering::Relaxed),
+                WM_RBUTTONDOWN => BUTTONS.fetch_or(2, Ordering::Relaxed),
+                WM_RBUTTONUP => BUTTONS.fetch_and(!2, Ordering::Relaxed),
+                WM_MBUTTONDOWN => BUTTONS.fetch_or(4, Ordering::Relaxed),
+                WM_MBUTTONUP => BUTTONS.fetch_and(!4, Ordering::Relaxed),
+                _ => 0,
+            };
+            let pressed = !grabbed && BUTTONS.load(Ordering::Relaxed) != 0;
             let input = match (wparam as u32, grabbed) {
-                (WM_MOUSEMOVE, false) => Some(Input::Pos { x, y }),
+                (WM_MOUSEMOVE, false) => Some(Input::Pos { x, y, pressed }),
                 (WM_MOUSEMOVE, true) => {
                     let (dx, dy) = (x - CENTER_X.load(Ordering::Relaxed), y - CENTER_Y.load(Ordering::Relaxed));
                     (dx != 0 || dy != 0).then_some(Input::Delta { dx, dy })
@@ -147,7 +159,7 @@ pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
     // Report where the cursor is right away.
     let mut p = POINT { x: 0, y: 0 };
     if unsafe { GetCursorPos(&mut p) } != 0 {
-        emit(Input::Pos { x: p.x, y: p.y });
+        emit(Input::Pos { x: p.x, y: p.y, pressed: false });
     }
     Ok(Arc::new(Win))
 }

@@ -57,19 +57,21 @@ pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
     let poller = x.clone();
     let tx = events.clone();
     std::thread::Builder::new().name("interdesk-x11-poll".into()).spawn(move || {
-        let mut last = (i32::MIN, i32::MIN);
+        let mut last = (i32::MIN, i32::MIN, false);
         loop {
             std::thread::sleep(Duration::from_millis(8));
             if poller.grabbed.load(Ordering::Relaxed) {
-                last = (i32::MIN, i32::MIN);
+                last = (i32::MIN, i32::MIN, false);
                 continue;
             }
             let Ok(cookie) = poller.conn.query_pointer(poller.root) else { break };
             let Ok(p) = cookie.reply() else { break };
-            let pos = (p.root_x as i32, p.root_y as i32);
+            // Button1..3 bits of the pointer mask.
+            let pressed = u16::from(p.mask) & 0x0700 != 0;
+            let pos = (p.root_x as i32, p.root_y as i32, pressed);
             if pos != last {
                 last = pos;
-                if tx.send(Input::Pos { x: pos.0, y: pos.1 }).is_err() {
+                if tx.send(Input::Pos { x: pos.0, y: pos.1, pressed }).is_err() {
                     break;
                 }
             }
@@ -272,7 +274,7 @@ mod tests {
 
         // Injection moves the real pointer, and the poller reports it.
         p.move_to(100, 200);
-        expect(&mut rx, Input::Pos { x: 100, y: 200 }).await;
+        expect(&mut rx, Input::Pos { x: 100, y: 200, pressed: false }).await;
 
         // Grabbed: motion becomes deltas, keys are captured.
         p.set_grab(true);
@@ -293,6 +295,6 @@ mod tests {
         // Released: positions again.
         p.set_grab(false);
         p.warp(300, 400);
-        expect(&mut rx, Input::Pos { x: 300, y: 400 }).await;
+        expect(&mut rx, Input::Pos { x: 300, y: 400, pressed: false }).await;
     }
 }

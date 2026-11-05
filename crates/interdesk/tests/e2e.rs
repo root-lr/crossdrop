@@ -70,6 +70,7 @@ async fn daemon(dir: &Path, name: &str) -> Handle {
         mdns: Some(false),
         download_dir: Some(dir.join(name).join("dl")),
         clipboard_sync: Some(false),
+        desktop_dir: None,
     })
     .await
     .unwrap()
@@ -134,7 +135,7 @@ async fn mouse_crosses_to_the_neighbour_and_back() {
 
     // Wait until alpha's link to bravo is up: moving to the edge then grabs.
     wait_for("the neighbour link", || {
-        ta.send(Input::Pos { x: 1919, y: 540 }).unwrap();
+        ta.send(Input::Pos { x: 1919, y: 540, pressed: false }).unwrap();
         fa.calls().contains(&Call::Grab(true))
     })
     .await;
@@ -192,7 +193,7 @@ async fn without_permission_the_edge_stays_closed() {
     let (_tb, stop_b) = launch(&b, Layout::default(), fb.clone());
     let (ta, stop_a) = launch(&a, layout, fa.clone());
     for _ in 0..20 {
-        ta.send(Input::Pos { x: 1919, y: 540 }).unwrap();
+        ta.send(Input::Pos { x: 1919, y: 540, pressed: false }).unwrap();
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(!fa.calls().contains(&Call::Grab(true)));

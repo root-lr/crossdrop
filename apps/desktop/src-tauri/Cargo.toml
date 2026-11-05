@@ -1,0 +1,37 @@
+[package]
+name = "crossdrop-desktop"
+version = "0.4.0"
+description = "crossdrop desktop app"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Built on its own (needs the web frontend and WebView libraries), outside
+# the main workspace.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossdrop-sdk = { path = "../../../crates/crossdrop-sdk" }
+crossdrop-proto = { path = "../../../crates/crossdrop-proto" }
+crossdrop-daemon = { path = "../../../crates/crossdrop-daemon" }
+interdesk = { path = "../../../crates/interdesk" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[features]
+# Serve the built frontend from the binary (set by `tauri build`).
+custom-protocol = ["tauri/custom-protocol"]

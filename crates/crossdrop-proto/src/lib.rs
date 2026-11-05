@@ -32,6 +32,9 @@ pub mod services {
     pub const FILES: &str = "crossdrop/files";
     /// Built-in clipboard sharing.
     pub const CLIPBOARD: &str = "crossdrop/clipboard";
+    /// interdesk's input service. A device allowed to drive this one may
+    /// also drop files on its desktop without asking.
+    pub const INTERDESK_INPUT: &str = "interdesk/input";
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +137,11 @@ pub mod wire {
     pub enum Files {
         Offer {
             entries: Vec<FileEntry>,
+            /// Sender asks for the files to land on the desktop (drag to a
+            /// neighbouring screen). Honoured only for devices allowed
+            /// `interdesk/input`.
+            #[serde(default)]
+            desktop: bool,
         },
         /// `offsets[i]` = bytes of entry `i` the receiver already holds.
         Answer {

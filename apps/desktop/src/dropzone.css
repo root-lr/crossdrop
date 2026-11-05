@@ -1,0 +1,31 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #f2b705;
+  font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+}
+
+.zone {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: #1b2532;
+  text-align: center;
+}
+
+.zone p {
+  display: none;
+  margin: 0;
+  padding: 16px;
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+/* At rest the window is a 4 px strip; it widens while a file hovers it. */
+@media (min-width: 40px) and (min-height: 40px) {
+  .zone p {
+    display: block;
+  }
+}

@@ -31,6 +31,7 @@ pub struct Options {
     pub download_dir: Option<PathBuf>,
     /// Override `clipboard_sync` (tests turn it off).
     pub clipboard_sync: Option<bool>,
+    pub desktop_dir: Option<PathBuf>,
 }
 
 /// A running daemon. Dropping it does not stop it; call [`Handle::shutdown`].
@@ -74,6 +75,9 @@ pub async fn start(opts: Options) -> Result<Handle> {
     }
     if let Some(dir) = opts.download_dir {
         config.download_dir = dir;
+    }
+    if let Some(dir) = opts.desktop_dir {
+        config.desktop_dir = dir;
     }
     if let Some(sync) = opts.clipboard_sync {
         config.clipboard_sync = sync;

@@ -95,7 +95,8 @@ fn translate(kind: CGEventType, event: &CGEvent, grabbed: bool) -> Option<Input>
                 (dx != 0 || dy != 0).then_some(Input::Delta { dx, dy })
             } else {
                 let p = event.location();
-                Some(Input::Pos { x: p.x as i32, y: p.y as i32 })
+                let pressed = !matches!(kind, MouseMoved);
+                Some(Input::Pos { x: p.x as i32, y: p.y as i32, pressed })
             }
         }
         _ if !grabbed => None,

@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "crossdrop-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "crossdrop-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "crossdrop-daemon"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -365,6 +365,7 @@ dependencies = [
  "crossdrop-core",
  "crossdrop-proto",
  "crossdrop-sdk",
+ "dirs",
  "quinn",
  "serde",
  "serde_json",
@@ -377,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "crossdrop-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -387,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "crossdrop-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -639,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "interdesk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",

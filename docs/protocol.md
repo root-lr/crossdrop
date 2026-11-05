@@ -76,7 +76,7 @@ Acceptance rules on the receiving device:
 ## Files (`crossdrop/files`)
 
 ```
-→ {"type":"offer","entries":[{"path":"photos/2026/a.jpg","size":123456,"mtime":1793900000}, …]}
+→ {"type":"offer","desktop":false,"entries":[{"path":"photos/2026/a.jpg","size":123456,"mtime":1793900000}, …]}
 ← {"type":"answer","accepted":true,"offsets":[0, …]}
    for each entry, in order:
 → <size - offset raw bytes>
@@ -88,6 +88,10 @@ Acceptance rules on the receiving device:
 - `path` is relative, `/`-separated; its first component is the transfer
   root (a file name or a folder name). Folders are sent recursively;
   symbolic links and empty folders are skipped.
+- `"desktop": true` in the offer asks for the files to land on the
+  receiver's desktop. It is honoured, without asking, only when the sender
+  is allowed `interdesk/input` on the receiver; otherwise the offer is
+  handled like any other.
 - The receiver may wait for its user (`crossdrop accept`, up to 5 minutes)
   unless the sender's device is set to auto-accept. A refusal is
   `{"type":"answer","accepted":false,"offsets":[]}`.

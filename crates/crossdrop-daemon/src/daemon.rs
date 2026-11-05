@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
-use crossdrop_core::{open_channel, peer_id, sas, Channel, Connection, DeviceId, Discovered, Node, PendingChannel};
+use crossdrop_core::{
+    open_channel, peer_id, sas, Channel, Connection, DeviceId, Discovered, Node, PendingChannel, Rejected,
+};
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
 use crossdrop_proto::{read_frame, services, write_frame};
@@ -24,6 +26,11 @@ const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(120);
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an incoming transfer waits for the user to accept it.
 const OFFER_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a cached connection may take to open a channel before it is
+/// considered dead.
+const STALE_CHECK: Duration = Duration::from_secs(3);
+/// How long dialing a device may take.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the system clipboard is checked for changes.
 const CLIPBOARD_POLL: Duration = Duration::from_millis(500);
 
@@ -160,12 +167,14 @@ impl Daemon {
         if service == services::FILES {
             let mut io = pending.accept().await?.into_io();
             let offer = crate::files::read_offer(&mut io).await?;
-            let accepted = device.auto_accept || self.ask_offer(peer, &device.name, &offer).await;
+            // A device allowed to drive this computer may drop files on its desktop.
+            let to_desktop = offer.desktop && device.allows(services::INTERDESK_INPUT);
+            let accepted = to_desktop || device.auto_accept || self.ask_offer(peer, &device.name, &offer).await;
             if !accepted {
                 info!(from = %device.name, "transfer declined");
                 return crate::files::decline(&mut io).await;
             }
-            let dir = &self.config.download_dir;
+            let dir = if to_desktop { &self.config.desktop_dir } else { &self.config.download_dir };
             let n = crate::files::receive(&mut io, offer, dir, &peer.to_string(), &device.name).await?;
             info!(from = %device.name, files = n, dir = %dir.display(), "transfer complete");
             return Ok(());
@@ -215,6 +224,34 @@ impl Daemon {
                 return Ok(conn.clone());
             }
         }
+        self.dial_peer(peer).await
+    }
+
+    /// Opens a channel to `peer`. A cached connection that does not answer
+    /// quickly is dropped and the peer dialed again: it may have restarted,
+    /// and a dead QUIC connection would otherwise hang until its idle timeout.
+    async fn channel_to(self: &Arc<Self>, peer: DeviceId, service: &str) -> Result<Channel> {
+        let cached = self.conns.lock().unwrap().get(&peer).filter(|c| c.close_reason().is_none()).cloned();
+        if let Some(conn) = cached {
+            match tokio::time::timeout(STALE_CHECK, open_channel(&conn, service)).await {
+                Ok(Ok(channel)) => return Ok(channel),
+                Ok(Err(e)) if e.downcast_ref::<Rejected>().is_some() => return Err(e),
+                _ => {
+                    debug!(peer = %peer.short(), "connection looks stale; reconnecting");
+                    conn.close(0u32.into(), b"stale");
+                    let mut conns = self.conns.lock().unwrap();
+                    if conns.get(&peer).is_some_and(|c| c.stable_id() == conn.stable_id()) {
+                        conns.remove(&peer);
+                    }
+                }
+            }
+        }
+        let conn = self.dial_peer(peer).await?;
+        open_channel(&conn, service).await
+    }
+
+    /// Dials `peer` at its known addresses.
+    async fn dial_peer(self: &Arc<Self>, peer: DeviceId) -> Result<Connection> {
         let mut addrs: Vec<SocketAddr> = Vec::new();
         if let Some(d) = self.discovered.lock().unwrap().get(&peer) {
             addrs.extend(&d.addrs);
@@ -241,7 +278,9 @@ impl Daemon {
     }
 
     async fn dial(self: &Arc<Self>, addr: SocketAddr) -> Result<(Connection, DeviceId)> {
-        let (conn, peer) = self.node.connect(addr).await?;
+        let (conn, peer) = tokio::time::timeout(DIAL_TIMEOUT, self.node.connect(addr))
+            .await
+            .map_err(|_| anyhow!("{addr} did not answer"))??;
         tokio::spawn(self.clone().serve_connection(peer, conn.clone()));
         Ok((conn, peer))
     }
@@ -344,10 +383,7 @@ impl Daemon {
     }
 
     async fn send_clipboard(self: &Arc<Self>, peer: DeviceId, text: String) -> Result<()> {
-        let conn = tokio::time::timeout(Duration::from_secs(3), self.connection_to(peer))
-            .await
-            .map_err(|_| anyhow!("{} did not answer", self.device_name(peer)))??;
-        let mut io = open_channel(&conn, services::CLIPBOARD).await?.into_io();
+        let mut io = self.channel_to(peer, services::CLIPBOARD).await?.into_io();
         write_frame(&mut io, &Clipboard { text }).await?;
         // Delivered only once the peer says it applied the text.
         let ack = tokio::time::timeout(Duration::from_secs(5), read_frame::<_, ChannelReply>(&mut io)).await??;
@@ -561,8 +597,7 @@ impl Daemon {
                 if self.trusted(id).is_none() {
                     bail!("{device} is not paired; run `crossdrop pair {device}` first");
                 }
-                let conn = self.connection_to(id).await?;
-                let channel = open_channel(&conn, &service).await?;
+                let channel = self.channel_to(id, &service).await?;
                 Ok(Response::ChannelReady { channel_id: self.park_channel(channel) })
             }
             Request::ListOffers => {

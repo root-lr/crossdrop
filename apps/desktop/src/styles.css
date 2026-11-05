@@ -1,0 +1,539 @@
+/* crossdrop desktop. A desk seen from above: slate desk mat, your screen in
+   the middle, neighbours around it. One loud colour, highlighter yellow,
+   only where files can be dropped. */
+
+:root {
+  --mat: #e6ebef;
+  --paper: #f7f9fa;
+  --ink: #1b2532;
+  --muted: #5b6878;
+  --line: #c6d0d9;
+  --online: #0e7c86;
+  --drop: #f2b705;
+  --danger: #a3242c;
+  --focus: #1f5fbf;
+
+  --step--1: 0.8125rem;
+  --step-0: 0.9375rem;
+  --step-1: 1.125rem;
+  --step-2: 1.5rem;
+  --step-3: 2.25rem;
+
+  color-scheme: light;
+  font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--mat);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h2 {
+  font-size: var(--step-1);
+  margin: 28px 0 10px;
+}
+
+button,
+select,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button {
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--muted);
+}
+
+button.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+button.danger {
+  color: var(--danger);
+  border-color: currentColor;
+  background: transparent;
+}
+
+button.link {
+  border: 0;
+  background: none;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+button.link.quiet {
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: var(--step-0);
+  max-width: 62ch;
+}
+
+.id {
+  color: var(--muted);
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+}
+
+.boot {
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.app {
+  min-height: 100vh;
+  padding: 20px 28px 40px;
+}
+
+/* Header */
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.me {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.me h1 {
+  font-size: var(--step-2);
+  letter-spacing: -0.01em;
+}
+
+/* Switches */
+
+.share,
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.share input,
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.track {
+  flex: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--line);
+  position: relative;
+  transition: background 0.15s;
+}
+
+.track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--paper);
+  transition: transform 0.15s;
+}
+
+input:checked + .track {
+  background: var(--online);
+}
+
+input:checked + .track::after {
+  transform: translateX(18px);
+}
+
+input:focus-visible + .track {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.share small {
+  display: block;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.notice {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-left: 4px solid var(--danger);
+  background: var(--paper);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* Layout */
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr);
+  gap: 40px;
+  margin-top: 24px;
+}
+
+@media (max-width: 860px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The desk map: the one bold element. */
+
+.desk-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr 1fr;
+  grid-template-rows: 84px 150px 84px;
+  grid-template-areas:
+    ". top ."
+    "left center right"
+    ". bottom .";
+  gap: 14px;
+  padding: 22px;
+  border-radius: 14px;
+  background: repeating-linear-gradient(0deg, transparent 0 23px, rgba(27, 37, 50, 0.05) 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px, rgba(27, 37, 50, 0.05) 23px 24px), #dde4ea;
+}
+
+.slot-top {
+  grid-area: top;
+}
+.slot-left {
+  grid-area: left;
+}
+.slot-right {
+  grid-area: right;
+}
+.slot-bottom {
+  grid-area: bottom;
+}
+.slot-center {
+  grid-area: center;
+}
+
+.slot > * {
+  height: 100%;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--paper);
+  border: 6px solid #2e3a4a;
+  border-bottom-width: 14px;
+}
+
+.screen strong {
+  font-size: var(--step-2);
+}
+
+.screen span {
+  color: #aeb9c6;
+  font-size: var(--step--1);
+}
+
+.neighbour {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--paper);
+  border: 2px solid var(--line);
+  text-align: center;
+  padding: 8px;
+}
+
+.neighbour.online {
+  border-color: var(--online);
+}
+
+.neighbour span {
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.neighbour.hover,
+.device.hover {
+  background: var(--drop);
+  border-color: var(--ink);
+}
+
+.neighbour.hover span {
+  color: var(--ink);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 2px dashed var(--line);
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.empty select {
+  width: 100%;
+  font-size: var(--step--1);
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.desk .hint {
+  margin-top: 10px;
+}
+
+/* Device list */
+
+.devices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.device {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 8px;
+}
+
+.device-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.device-head strong {
+  font-size: var(--step-1);
+}
+
+.device-head .id {
+  margin-right: auto;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+}
+
+.dot.on {
+  background: var(--online);
+  border-color: var(--online);
+}
+
+.settings {
+  display: grid;
+  gap: 10px;
+  padding: 14px 0 6px 19px;
+  justify-items: start;
+}
+
+.by-address {
+  margin-top: 16px;
+  font-size: var(--step-0);
+}
+
+.by-address label {
+  color: var(--muted);
+}
+
+.by-address div {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.by-address input {
+  flex: 1;
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+/* Right column */
+
+.side h2:first-child {
+  margin-top: 0;
+}
+
+.request {
+  background: var(--paper);
+  border-left: 4px solid var(--drop);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.request .files {
+  color: var(--muted);
+  font-size: var(--step--1);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.code {
+  font-size: var(--step-3);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  margin: 6px 0;
+}
+
+.code.big {
+  font-size: 3.25rem;
+  text-align: center;
+  margin: 18px 0;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.transfers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.transfers li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.transfer-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.state {
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.state.done {
+  color: var(--online);
+}
+
+.state.failed,
+.state.declined {
+  color: var(--danger);
+}
+
+progress {
+  width: 100%;
+  height: 6px;
+  margin: 6px 0 2px;
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+progress::-webkit-progress-bar {
+  background: var(--line);
+}
+
+progress::-webkit-progress-value {
+  background: var(--ink);
+}
+
+progress::-moz-progress-bar {
+  background: var(--ink);
+}
+
+.transfers small {
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* Dialog */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 37, 50, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.dialog {
+  width: min(440px, 100%);
+  background: var(--paper);
+  border-radius: 12px;
+  padding: 24px 28px;
+}
+
+.dialog h2 {
+  margin-top: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

@@ -11,9 +11,12 @@ It is also a **platform**: extensions plug into the same secure links through
 a small local API. The first one, **interdesk**, lets one mouse and keyboard
 drive every computer on your desk.
 
-> Status: **v0.3, early**. Pairing, files and folders with resume, clipboard
-> sharing and **interdesk** (shared mouse and keyboard) work on the LAN from
-> the command line. The desktop app is next — see the [roadmap](#roadmap).
+> Status: **v0.4, early**. Pairing, files and folders with resume, clipboard
+> sharing, **interdesk** (shared mouse and keyboard) and a **desktop app**
+> work on the local network. Internet connections are next — see the
+> [roadmap](#roadmap).
+
+![The crossdrop desktop app: this computer in the middle of the desk, bravo on its right](docs/desktop.png)
 
 ## Features
 
@@ -33,7 +36,25 @@ drive every computer on your desk.
 - **Extension API**: register a service, receive authenticated byte streams
   ([docs/extensions.md](docs/extensions.md)).
 
-## Quick start
+## Desktop app
+
+The app shows your desk from above: this computer in the middle, the others
+where they sit. Pair devices by comparing a code, drop files on a device to
+send them, answer incoming files, choose what each device may do, and turn
+on mouse and keyboard sharing. If no crossdrop daemon is running, the app
+starts one inside itself.
+
+Drag a file to the edge of your screen that faces a neighbour: a yellow zone
+opens, drop it there and the file lands on that computer's desktop.
+
+Installers for Windows, macOS and Linux are attached to each
+[release](https://github.com/root-lr/crossdrop/releases). To build it:
+
+```sh
+cd apps/desktop && npm ci && npm run tauri build
+```
+
+## Quick start (command line)
 
 ```sh
 cargo install --git https://github.com/root-lr/crossdrop crossdrop-cli interdesk
@@ -124,6 +145,7 @@ Details: [docs/protocol.md](docs/protocol.md).
 | [`crossdrop-sdk`](crates/crossdrop-sdk) | Client library for the CLI, apps and extensions |
 | [`crossdrop-cli`](crates/crossdrop-cli) | The `crossdrop` command |
 | [`interdesk`](crates/interdesk) | Shared mouse and keyboard, an extension using only `crossdrop-sdk` |
+| [`apps/desktop`](apps/desktop) | Tauri 2 + React desktop app |
 
 ## Roadmap
 
@@ -131,8 +153,8 @@ Details: [docs/protocol.md](docs/protocol.md).
 | --- | --- |
 | v0.1 ✓ | Identity, pairing, encrypted channels, extension API, file transfer (CLI) |
 | v0.2 ✓ | Folders, resumable transfers, accept/decline incoming files, clipboard sync |
-| **v0.3** ✓ | **interdesk**: shared mouse and keyboard (Windows, macOS, X11) |
-| v0.4 | Desktop app (Tauri), drag & drop files across screens |
+| v0.3 ✓ | **interdesk**: shared mouse and keyboard (Windows, macOS, X11) |
+| **v0.4** ✓ | Desktop app (Tauri), drag files to a neighbouring screen |
 | v0.5 | Connections over the internet: hole punching, self-hostable relay |
 | v1.0 | Frozen protocol, signed binaries, published benchmarks |
 

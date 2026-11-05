@@ -105,10 +105,30 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(FileEntry, PathBuf)>) -> Result<()
     Ok(())
 }
 
+/// Options for [`send_files_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SendOptions {
+    /// Ask the receiver to put the files on its desktop.
+    pub to_desktop: bool,
+}
+
 /// Sends files and folders over an open `crossdrop/files` channel.
 pub async fn send_files<S>(
     io: &mut S,
     paths: &[PathBuf],
+    on_event: &mut (dyn FnMut(SendEvent<'_>) + Send),
+) -> Result<SendReport>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    send_files_with(io, paths, SendOptions::default(), on_event).await
+}
+
+/// [`send_files`] with options.
+pub async fn send_files_with<S>(
+    io: &mut S,
+    paths: &[PathBuf],
+    options: SendOptions,
     on_event: &mut (dyn FnMut(SendEvent<'_>) + Send),
 ) -> Result<SendReport>
 where
@@ -120,7 +140,7 @@ where
     }
     let total: u64 = items.iter().map(|(e, _)| e.size).sum();
     let entries: Vec<FileEntry> = items.iter().map(|(e, _)| e.clone()).collect();
-    write_frame(io, &Files::Offer { entries }).await?;
+    write_frame(io, &Files::Offer { entries, desktop: options.to_desktop }).await?;
     on_event(SendEvent::Waiting { files: items.len(), bytes: total });
 
     let offsets = match read_frame::<_, Files>(io).await? {

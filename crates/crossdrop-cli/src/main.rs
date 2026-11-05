@@ -157,6 +157,7 @@ async fn run(cli: Cli) -> Result<()> {
                 mdns: no_mdns.then_some(false),
                 download_dir,
                 clipboard_sync: None,
+                desktop_dir: None,
             })
             .await?;
         }

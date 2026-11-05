@@ -17,6 +17,7 @@ async fn daemon(dir: &Path, name: &str) -> Handle {
         mdns: Some(false),
         download_dir: Some(dir.join(name).join("downloads")),
         clipboard_sync: Some(false),
+        desktop_dir: Some(dir.join(name).join("desktop")),
     })
     .await
     .unwrap()
@@ -99,6 +100,15 @@ async fn pair_send_files_and_extension() {
     let mut stream = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
     send_files(&mut stream, &[src.join("big.bin")], &mut events).await.unwrap();
     assert_eq!(std::fs::read(downloads.join("big (1).bin")).unwrap(), big);
+
+    // Desktop drop: lands on the desktop without asking once A may drive B.
+    client(&b).await.set_auto_accept("alpha", false).await.unwrap();
+    client(&b).await.set_permission("alpha", "interdesk/input", true).await.unwrap();
+    let mut stream = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
+    let opts = crossdrop_sdk::files::SendOptions { to_desktop: true };
+    crossdrop_sdk::files::send_files_with(&mut stream, &[src.join("photos")], opts, &mut events).await.unwrap();
+    let desktop = dir.path().join("bravo").join("desktop");
+    assert_eq!(std::fs::read_to_string(desktop.join("photos/2026/a.jpg")).unwrap(), "jpeg");
 
     // Clipboard: refused until B allows it, then delivered.
     let err = client(&a).await.clipboard_send("secret", Some("bravo")).await.unwrap_err();
@@ -197,4 +207,41 @@ async fn second_daemon_on_same_home_is_refused() {
     .await;
     assert!(again.is_err());
     a.shutdown();
+}
+
+#[tokio::test]
+async fn peer_restart_does_not_hang_the_next_transfer() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = daemon(dir.path(), "alpha").await;
+    let b = daemon(dir.path(), "bravo").await;
+    pair(&a, &b).await;
+    client(&b).await.set_auto_accept("alpha", true).await.unwrap();
+    let file = dir.path().join("note.txt");
+    std::fs::write(&file, "hi").unwrap();
+    let mut events = |_: SendEvent<'_>| {};
+    let mut s = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
+    send_files(&mut s, std::slice::from_ref(&file), &mut events).await.unwrap();
+
+    // bravo restarts on the same port; alpha still holds the old connection.
+    let port = b.port;
+    b.shutdown();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let b = start(Options {
+        home: Some(dir.path().join("bravo").join("home")),
+        name: Some("bravo".into()),
+        port: Some(port),
+        mdns: Some(false),
+        download_dir: Some(dir.path().join("bravo").join("downloads")),
+        clipboard_sync: Some(false),
+        desktop_dir: None,
+    })
+    .await
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let mut s = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
+    send_files(&mut s, std::slice::from_ref(&file), &mut events).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    a.shutdown();
+    b.shutdown();
 }

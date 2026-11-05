@@ -11,10 +11,13 @@ use crate::protocol::{Button, Msg};
 /// What the platform reports.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Input {
-    /// Cursor position on this screen (only while not grabbed).
+    /// Cursor position on this screen (only while not grabbed). `pressed`:
+    /// a mouse button is held (a drag or a selection), so the cursor must
+    /// not jump to another screen.
     Pos {
         x: i32,
         y: i32,
+        pressed: bool,
     },
     /// Relative motion (only while grabbed).
     Delta {
@@ -103,7 +106,7 @@ impl Session {
     }
 
     fn local(&mut self, input: Input) -> Vec<Action> {
-        let Input::Pos { x, y } = input else { return vec![] };
+        let Input::Pos { x, y, pressed: false } = input else { return vec![] };
         let Some(side) = edge_at(&self.screen, x, y) else { return vec![] };
         let Some(idx) = self.sides.iter().position(|s| *s == side) else { return vec![] };
         let Some((w, h)) = self.sizes[idx] else { return vec![] };
@@ -185,8 +188,8 @@ mod tests {
     #[test]
     fn crossing_and_coming_back() {
         let mut s = session();
-        assert!(s.on_input(Input::Pos { x: 1000, y: 540 }).is_empty());
-        let a = s.on_input(Input::Pos { x: 1919, y: 540 });
+        assert!(s.on_input(Input::Pos { x: 1000, y: 540, pressed: false }).is_empty());
+        let a = s.on_input(Input::Pos { x: 1919, y: 540, pressed: false });
         assert_eq!(a, vec![Action::Grab(true), Action::Send(0, Msg::Enter { x: 0, y: 720 })]);
         assert_eq!(s.remote(), Some(0));
 
@@ -204,14 +207,15 @@ mod tests {
     #[test]
     fn unconnected_or_unconfigured_edges_do_nothing() {
         let mut s = session();
-        assert!(s.on_input(Input::Pos { x: 0, y: 500 }).is_empty()); // nobody on the left
-        assert!(s.on_input(Input::Pos { x: 500, y: 0 }).is_empty()); // top neighbour offline
+        assert!(s.on_input(Input::Pos { x: 0, y: 500, pressed: false }).is_empty()); // nobody on the left
+        assert!(s.on_input(Input::Pos { x: 500, y: 0, pressed: false }).is_empty());
+        // top neighbour offline
     }
 
     #[test]
     fn events_are_forwarded_and_escape_shortcut_works() {
         let mut s = session();
-        s.on_input(Input::Pos { x: 1919, y: 0 });
+        s.on_input(Input::Pos { x: 1919, y: 0, pressed: false });
         let click = Input::Button { button: Button::Left, down: true };
         assert_eq!(s.on_input(click), vec![Action::Send(0, Msg::Button { button: Button::Left, down: true })]);
         assert_eq!(s.on_input(Input::Wheel { dx: 0, dy: -120 }), vec![Action::Send(0, Msg::Wheel { dx: 0, dy: -120 })]);
@@ -224,17 +228,24 @@ mod tests {
     #[test]
     fn losing_the_neighbour_releases_the_grab() {
         let mut s = session();
-        s.on_input(Input::Pos { x: 1919, y: 100 });
+        s.on_input(Input::Pos { x: 1919, y: 100, pressed: false });
         let a = s.disconnected(0);
         assert_eq!(a, vec![Action::Send(0, Msg::Leave), Action::Grab(false), Action::Warp(960, 540)]);
-        assert!(s.on_input(Input::Pos { x: 1919, y: 100 }).is_empty());
+        assert!(s.on_input(Input::Pos { x: 1919, y: 100, pressed: false }).is_empty());
+    }
+
+    #[test]
+    fn no_crossing_while_dragging() {
+        let mut s = session();
+        assert!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: true }).is_empty());
+        assert_eq!(s.remote(), None);
     }
 
     #[test]
     fn neighbour_above() {
         let mut s = session();
         s.connected(1, 1280, 800);
-        let a = s.on_input(Input::Pos { x: 960, y: 0 });
+        let a = s.on_input(Input::Pos { x: 960, y: 0, pressed: false });
         assert_eq!(a[1], Action::Send(1, Msg::Enter { x: 640, y: 799 }));
         let a = s.on_input(Input::Delta { dx: 0, dy: 1 });
         assert_eq!(a[0], Action::Send(1, Msg::Leave));
