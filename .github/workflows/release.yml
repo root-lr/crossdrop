@@ -4,7 +4,8 @@ on:
   push:
     tags: ["v*"]
   # Or from the Actions tab: "Run workflow", with the version to release.
-  # The tag is created on the commit the workflow runs on.
+  # The tag is created on the commit the workflow runs on, when the draft
+  # release is published.
   workflow_dispatch:
     inputs:
       version:
@@ -15,24 +16,47 @@ on:
 permissions:
   contents: write
 
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
+  prepare:
+    name: Start a fresh draft
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove an earlier draft of this version
+        run: |
+          ids=$(gh api "repos/${{ github.repository }}/releases" \
+            --jq ".[] | select(.draft and .tag_name == \"$VERSION\") | .id")
+          for id in $ids; do
+            echo "deleting draft $id"
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+          done
+
   build:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - name: Linux
+            os: ubuntu-22.04
             archive: tar.gz
-          - os: macos-latest
+            tauri_args: ""
+          # One universal build for Apple silicon and Intel Macs.
+          - name: macOS (universal)
+            os: macos-latest
             archive: tar.gz
-          - os: windows-latest
+            tauri_args: --target universal-apple-darwin
+          - name: Windows
+            os: windows-latest
             archive: zip
+            tauri_args: ""
     runs-on: ${{ matrix.os }}
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,6 +65,8 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -52,26 +78,55 @@ jobs:
       - run: npm ci
         working-directory: apps/desktop
 
-      # Desktop app installers (.dmg, .msi/.exe, .deb/.AppImage) on a draft release.
+      # Desktop app installers (.dmg, .msi/.exe, .deb/.rpm/.AppImage) on a draft release.
       - uses: tauri-apps/tauri-action@v0
         with:
           projectPath: apps/desktop
           tagName: ${{ env.VERSION }}
           releaseName: crossdrop ${{ env.VERSION }}
-          releaseCommitish: ${{ github.sha }}
-          releaseBody: See the README for what changed and how to install.
+          releaseBody: |
+            Desktop app: the installer for your system below.
+            Command line (crossdrop, crossdropd, interdesk): the `crossdrop-cli-*` archive, or Homebrew:
+            ```
+            brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
+            brew install crossdrop
+            brew install --cask crossdrop-app
+            ```
           releaseDraft: true
+          releaseCommitish: ${{ github.sha }}
+          args: ${{ matrix.tauri_args }}
 
       # Command-line tools: crossdrop, crossdropd, interdesk.
-      - run: cargo build --release -p crossdrop-cli -p crossdrop-daemon -p interdesk
-      - name: Package the command-line tools
+      - name: Build and upload the command-line tools
         shell: bash
         run: |
-          name=crossdrop-cli-$VERSION-$(rustc -vV | sed -n 's/host: //p')
+          bins="crossdrop crossdropd interdesk"
+          pkgs="-p crossdrop-cli -p crossdrop-daemon -p interdesk"
+          if [ "$RUNNER_OS" = macOS ]; then
+            triple=universal-apple-darwin
+            out=target/universal
+            mkdir -p "$out"
+            for t in aarch64-apple-darwin x86_64-apple-darwin; do
+              cargo build --release --target "$t" $pkgs
+            done
+            for b in $bins; do
+              lipo -create -output "$out/$b" \
+                "target/aarch64-apple-darwin/release/$b" "target/x86_64-apple-darwin/release/$b"
+            done
+            lipo -info "$out/crossdrop"
+          else
+            triple=$(rustc -vV | sed -n 's/host: //p')
+            out=target/release
+            cargo build --release $pkgs
+          fi
+          ext=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
+          name="crossdrop-cli-$VERSION-$triple"
           mkdir "$name"
-          for bin in crossdrop crossdropd interdesk; do
-            cp "target/release/$bin$([ "$RUNNER_OS" = Windows ] && echo .exe)" "$name/"
-          done
+          for b in $bins; do cp "$out/$b$ext" "$name/"; done
           cp README.md LICENSE-MIT LICENSE-APACHE "$name/"
-          if [ "${{ matrix.archive }}" = zip ]; then 7z a "$name.zip" "$name" >/dev/null; else tar czf "$name.tar.gz" "$name"; fi
+          if [ "${{ matrix.archive }}" = zip ]; then
+            7z a "$name.zip" "$name" >/dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
           gh release upload "$VERSION" "$name.${{ matrix.archive }}" --clobber

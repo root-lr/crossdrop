@@ -47,18 +47,34 @@ starts one inside itself.
 Drag a file to the edge of your screen that faces a neighbour: a yellow zone
 opens, drop it there and the file lands on that computer's desktop.
 
-Installers for Windows, macOS and Linux are attached to each
-[release](https://github.com/root-lr/crossdrop/releases). To build it:
+Install it from a [release](https://github.com/root-lr/crossdrop/releases) or
+with `brew install --cask crossdrop-app` (see [Install](#install)). To build it:
 
 ```sh
 cd apps/desktop && npm ci && npm run tauri build
 ```
 
-## Quick start (command line)
+## Install
+
+**macOS and Linux, with Homebrew:**
 
 ```sh
-cargo install --git https://github.com/root-lr/crossdrop crossdrop-cli interdesk
+brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
+brew install crossdrop              # crossdrop, crossdropd, interdesk
+brew services start crossdrop       # keep the daemon running
+brew install --cask crossdrop-app   # the desktop app (macOS, Apple silicon and Intel)
 ```
+
+**Windows, macOS, Linux:** installers and command-line archives are attached to
+each [release](https://github.com/root-lr/crossdrop/releases).
+
+**From source:** `cargo install --git https://github.com/root-lr/crossdrop crossdrop-cli interdesk`
+
+The binaries are not signed yet: Windows shows a SmartScreen warning ("More
+info", then "Run anyway"); on macOS, run
+`xattr -dr com.apple.quarantine /Applications/crossdrop.app` if it refuses to open.
+
+## Quick start (command line)
 
 On each computer:
 

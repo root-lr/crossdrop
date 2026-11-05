@@ -1,0 +1,60 @@
+name: Homebrew
+
+# Updates Formula/crossdrop.rb and Casks/crossdrop-app.rb when a release is
+# published, so `brew upgrade` picks the new version up.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag, e.g. v0.4.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.version || github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Download the release assets
+        run: |
+          mkdir assets
+          id=$(gh api "repos/${{ github.repository }}/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -1)
+          gh api "repos/${{ github.repository }}/releases/$id/assets" --jq '.[] | "\(.id) \(.name)"' |
+            while read -r asset name; do
+              case "$name" in
+                crossdrop-cli-*.tar.gz | *_universal.dmg)
+                  gh api -H "Accept: application/octet-stream" \
+                    "repos/${{ github.repository }}/releases/assets/$asset" > "assets/$name" ;;
+              esac
+            done
+          ls -l assets
+      - run: packaging/homebrew/update.sh "$TAG" assets
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula Casks
+          if git diff --cached --quiet; then echo "already up to date"; exit 0; fi
+          git commit -m "homebrew: crossdrop ${TAG#v}"
+          git push origin main
+
+  # Installs from the tap like a user would, on a clean Mac.
+  check:
+    needs: update
+    runs-on: macos-latest
+    steps:
+      - run: brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
+      - run: brew install crossdrop
+      - run: brew test crossdrop
+      - run: crossdrop --version && interdesk --version && crossdropd --version
+      - run: brew install --cask crossdrop-app
+      - run: lipo -info /Applications/crossdrop.app/Contents/MacOS/crossdrop-desktop
