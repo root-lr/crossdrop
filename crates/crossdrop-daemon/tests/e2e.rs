@@ -50,6 +50,16 @@ async fn pair(a: &Handle, b: &Handle) {
     let (paired, _, peer_name) = confirm.await.unwrap();
     assert!(paired);
     assert_eq!(peer_name, "bravo");
+
+    // B stores A once A has read the answer, a moment after A is done.
+    let a_id = a.id.to_string();
+    for _ in 0..250 {
+        if cb.devices().await.unwrap().iter().any(|d| d.id == a_id && d.paired) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("bravo never stored the pairing");
 }
 
 #[tokio::test]

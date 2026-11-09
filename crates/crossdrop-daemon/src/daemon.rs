@@ -13,7 +13,7 @@ use crossdrop_core::{
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
 use crossdrop_proto::{read_frame, services, write_frame};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
@@ -22,6 +22,8 @@ use crate::config::{Config, TrustStore, TrustedDevice};
 
 /// How long a user has to compare pairing codes.
 const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the responder waits for the initiator to acknowledge the answer.
+const PAIR_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long an opened channel waits for its client to attach.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an incoming transfer waits for the user to accept it.
@@ -525,13 +527,22 @@ impl Daemon {
         info!(from = %name, id = %peer.short(), code = %code, "pairing request: run `crossdrop requests`");
         let accepted = matches!(tokio::time::timeout(PAIR_DECISION_TIMEOUT, rx).await, Ok(Ok(true)));
         self.incoming_pairs.lock().unwrap().remove(&pair_id);
-        if accepted {
-            self.add_trusted(peer, name.clone(), conn.remote_address())?;
-            info!(peer = %name, id = %peer.short(), "paired");
-        }
         write_frame(&mut io, &Pair::Response { accepted, name: self.config.name.clone() }).await?;
         let _ = io.shutdown().await;
-        Ok(())
+        if !accepted {
+            return Ok(());
+        }
+        // The initiator finishes its side once it has read the answer. Trust
+        // it only then: if it gave up or went away, neither side is paired.
+        let mut rest = [0u8; 1];
+        match tokio::time::timeout(PAIR_ACK_TIMEOUT, io.read(&mut rest)).await {
+            Ok(Ok(0)) => {
+                self.add_trusted(peer, name.clone(), conn.remote_address())?;
+                info!(peer = %name, id = %peer.short(), "paired");
+                Ok(())
+            }
+            _ => bail!("{name} went away before the pairing completed; not paired"),
+        }
     }
 
     fn add_trusted(&self, peer: DeviceId, name: String, addr: SocketAddr) -> Result<()> {
@@ -848,5 +859,63 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1)).await;
         assert!(daemon.outgoing_pairs.lock().unwrap().is_empty());
         assert!(daemon.pair_confirm(&pair_id, true).await.is_err());
+    }
+
+    /// A responder daemon serving connections, and a bare node to pair from.
+    fn responder() -> (Arc<Daemon>, SocketAddr, Node, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let addr = node.local_addr().unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+        tokio::spawn(daemon.clone().accept_loop());
+        let initiator = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        (daemon, addr, initiator, dir)
+    }
+
+    /// Sends a pairing request and waits until the responder lists it.
+    async fn request_pairing(daemon: &Daemon, initiator: &Node, addr: SocketAddr) -> (Connection, Channel, String) {
+        let (conn, _) = initiator.connect(addr).await.unwrap();
+        let mut channel = open_channel(&conn, services::PAIR).await.unwrap();
+        write_frame(&mut channel.send, &Pair::Request { name: "alpha".into() }).await.unwrap();
+        for _ in 0..100 {
+            if let Some(id) = daemon.incoming_pairs.lock().unwrap().keys().next().cloned() {
+                return (conn, channel, id);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the pairing request never showed up");
+    }
+
+    async fn trusts(daemon: &Daemon, peer: DeviceId) -> bool {
+        for _ in 0..50 {
+            if daemon.trusted(peer).is_some() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn accepted_pairing_is_trusted_once_the_initiator_read_the_answer() {
+        let (daemon, addr, initiator, _dir) = responder();
+        let (_conn, mut channel, pair_id) = request_pairing(&daemon, &initiator, addr).await;
+        daemon.handle_request(Request::PairAnswer { pair_id, accept: true }).await.unwrap();
+        let answer: Pair = read_frame(&mut channel.recv).await.unwrap();
+        assert!(matches!(answer, Pair::Response { accepted: true, .. }));
+        channel.send.finish().unwrap();
+        assert!(trusts(&daemon, initiator.id()).await);
+    }
+
+    #[tokio::test]
+    async fn initiator_gone_before_the_answer_is_not_trusted() {
+        let (daemon, addr, initiator, _dir) = responder();
+        let (conn, _channel, pair_id) = request_pairing(&daemon, &initiator, addr).await;
+        conn.close(0u32.into(), b"gone");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        daemon.handle_request(Request::PairAnswer { pair_id, accept: true }).await.unwrap();
+        assert!(!trusts(&daemon, initiator.id()).await);
     }
 }
