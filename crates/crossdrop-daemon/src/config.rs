@@ -55,14 +55,38 @@ impl Config {
     }
 }
 
+/// Default device name: the name the user gave this computer.
+///
+/// macOS has neither `HOSTNAME` in the environment of GUI apps and services
+/// nor `/etc/hostname`, so it asks the system for the "Computer Name" first,
+/// then falls back to the network host name.
 fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
+    computer_name()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .or_else(|| gethostname::gethostname().into_string().ok())
+        .and_then(|s| clean_name(&s))
         .unwrap_or_else(|| "crossdrop".to_string())
+}
+
+/// The user-visible computer name (System Settings → General → Sharing).
+#[cfg(target_os = "macos")]
+fn computer_name() -> Option<String> {
+    let out = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn computer_name() -> Option<String> {
+    None
+}
+
+/// Trims a host name and drops the mDNS `.local` suffix.
+fn clean_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    let name = name.strip_suffix(".local").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// A paired device and what it may do here.
@@ -142,6 +166,15 @@ mod tests {
         assert_eq!(again.devices, store.devices);
         assert!(again.devices["ABCD"].allows(services::FILES));
         assert!(!again.devices["ABCD"].allows("interdesk/input"));
+    }
+
+    #[test]
+    fn host_names_are_cleaned() {
+        assert_eq!(clean_name("mona-2.local\n").as_deref(), Some("mona-2"));
+        assert_eq!(clean_name("  desk  ").as_deref(), Some("desk"));
+        assert_eq!(clean_name(" \n"), None);
+        assert_eq!(clean_name(".local"), None);
+        assert!(!hostname().is_empty());
     }
 
     #[test]
