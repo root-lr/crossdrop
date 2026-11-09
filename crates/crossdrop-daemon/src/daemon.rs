@@ -22,6 +22,8 @@ use crate::config::{Config, TrustStore, TrustedDevice};
 
 /// How long a user has to compare pairing codes.
 const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Pairing requests waiting for the local user at once (one per device).
+const MAX_PAIR_REQUESTS: usize = 8;
 /// How long the responder waits for the initiator to acknowledge the answer.
 const PAIR_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long an opened channel waits for its client to attach.
@@ -520,10 +522,27 @@ impl Daemon {
         let code = sas(&conn, self.id(), peer)?;
         let pair_id = self.new_token();
         let (tx, rx) = oneshot::channel();
-        self.incoming_pairs
-            .lock()
-            .unwrap()
-            .insert(pair_id.clone(), IncomingPair { peer, name: name.clone(), sas: code.clone(), decision: tx });
+        let refused = {
+            let mut pairs = self.incoming_pairs.lock().unwrap();
+            // A device asking again (its user retried) replaces its previous
+            // request, which is then answered "no".
+            pairs.retain(|_, p| p.peer != peer);
+            // Anyone on the network may ask: keep the list short and readable.
+            let refused = pairs.len() >= MAX_PAIR_REQUESTS;
+            if !refused {
+                pairs.insert(
+                    pair_id.clone(),
+                    IncomingPair { peer, name: name.clone(), sas: code.clone(), decision: tx },
+                );
+            }
+            refused
+        };
+        if refused {
+            debug!(from = %name, id = %peer.short(), "pairing request refused: too many waiting");
+            write_frame(&mut io, &Pair::Response { accepted: false, name: self.config.name.clone() }).await?;
+            let _ = io.shutdown().await;
+            return Ok(());
+        }
         info!(from = %name, id = %peer.short(), code = %code, "pairing request: run `crossdrop requests`");
         let accepted = matches!(tokio::time::timeout(PAIR_DECISION_TIMEOUT, rx).await, Ok(Ok(true)));
         self.incoming_pairs.lock().unwrap().remove(&pair_id);
@@ -917,5 +936,44 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         daemon.handle_request(Request::PairAnswer { pair_id, accept: true }).await.unwrap();
         assert!(!trusts(&daemon, initiator.id()).await);
+    }
+
+    #[tokio::test]
+    async fn a_new_request_from_the_same_device_replaces_the_old_one() {
+        let (daemon, addr, initiator, _dir) = responder();
+        let (conn, mut first, first_id) = request_pairing(&daemon, &initiator, addr).await;
+        let mut second = open_channel(&conn, services::PAIR).await.unwrap();
+        write_frame(&mut second.send, &Pair::Request { name: "alpha".into() }).await.unwrap();
+        let answer: Pair = read_frame(&mut first.recv).await.unwrap();
+        assert!(matches!(answer, Pair::Response { accepted: false, .. }));
+        let pending: Vec<String> = daemon.incoming_pairs.lock().unwrap().keys().cloned().collect();
+        assert_eq!(pending.len(), 1);
+        assert_ne!(pending[0], first_id);
+    }
+
+    #[tokio::test]
+    async fn waiting_pairing_requests_are_capped() {
+        let (daemon, addr, _, _dir) = responder();
+        let mut kept = Vec::new();
+        for _ in 0..MAX_PAIR_REQUESTS {
+            let initiator = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+            let (conn, _) = initiator.connect(addr).await.unwrap();
+            let mut channel = open_channel(&conn, services::PAIR).await.unwrap();
+            write_frame(&mut channel.send, &Pair::Request { name: "x".into() }).await.unwrap();
+            kept.push((initiator, conn, channel));
+        }
+        let extra = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let (conn, _) = extra.connect(addr).await.unwrap();
+        let mut channel = open_channel(&conn, services::PAIR).await.unwrap();
+        write_frame(&mut channel.send, &Pair::Request { name: "x".into() }).await.unwrap();
+        for _ in 0..100 {
+            if daemon.incoming_pairs.lock().unwrap().len() == MAX_PAIR_REQUESTS {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let answer: Pair = read_frame(&mut channel.recv).await.unwrap();
+        assert!(matches!(answer, Pair::Response { accepted: false, .. }));
+        assert_eq!(daemon.incoming_pairs.lock().unwrap().len(), MAX_PAIR_REQUESTS);
     }
 }
