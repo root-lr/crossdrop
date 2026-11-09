@@ -115,6 +115,14 @@ impl Daemon {
         self.discovered.lock().unwrap().insert(d.id, d);
     }
 
+    /// The device stopped announcing itself: it is no longer nearby. A live
+    /// connection still counts as online in [`Self::list_devices`].
+    pub fn on_lost(&self, id: DeviceId) {
+        if self.discovered.lock().unwrap().remove(&id).is_some() {
+            debug!(peer = %id.short(), "gone from the network");
+        }
+    }
+
     /// Accept loop for incoming QUIC connections.
     pub async fn accept_loop(self: Arc<Self>) {
         while let Some(incoming) = self.node.accept().await {
@@ -690,5 +698,28 @@ impl Daemon {
         let mut list: Vec<DeviceInfo> = out.into_values().collect();
         list.sort_by(|a, b| b.paired.cmp(&a.paired).then(a.name.cmp(&b.name)));
         list
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossdrop_core::Identity;
+
+    #[tokio::test]
+    async fn a_device_that_leaves_is_no_longer_listed_online() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+
+        let peer = Identity::generate().unwrap().id();
+        let addrs = vec!["10.0.0.2:47470".parse().unwrap()];
+        daemon.on_discovered(Discovered { id: peer, name: "bravo".into(), addrs });
+        let listed = daemon.list_devices();
+        assert_eq!((listed.len(), listed[0].online), (1, true));
+
+        daemon.on_lost(peer);
+        assert!(daemon.list_devices().is_empty());
     }
 }
