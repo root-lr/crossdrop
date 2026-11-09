@@ -260,14 +260,7 @@ impl Daemon {
 
     /// Dials `peer` at its known addresses.
     async fn dial_peer(self: &Arc<Self>, peer: DeviceId) -> Result<Connection> {
-        let mut addrs: Vec<SocketAddr> = Vec::new();
-        if let Some(d) = self.discovered.lock().unwrap().get(&peer) {
-            addrs.extend(&d.addrs);
-        }
-        if let Some(t) = self.trusted(peer) {
-            addrs.extend(t.addrs.iter().filter_map(|a| a.parse::<SocketAddr>().ok()));
-        }
-        addrs.dedup();
+        let addrs = self.known_addrs(peer);
         if addrs.is_empty() {
             bail!("no known address for {}; is it on this network?", peer.short());
         }
@@ -283,6 +276,21 @@ impl Daemon {
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow!("unreachable")))
+    }
+
+    /// Addresses to try for `peer`, each once: those announced on the network
+    /// first, then the ones remembered at pairing time.
+    fn known_addrs(&self, peer: DeviceId) -> Vec<SocketAddr> {
+        let mut addrs: Vec<SocketAddr> = Vec::new();
+        if let Some(d) = self.discovered.lock().unwrap().get(&peer) {
+            addrs.extend(&d.addrs);
+        }
+        if let Some(t) = self.trusted(peer) {
+            addrs.extend(t.addrs.iter().filter_map(|a| a.parse::<SocketAddr>().ok()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        addrs.retain(|a| seen.insert(*a));
+        addrs
     }
 
     async fn dial(self: &Arc<Self>, addr: SocketAddr) -> Result<(Connection, DeviceId)> {
@@ -721,5 +729,23 @@ mod tests {
 
         daemon.on_lost(peer);
         assert!(daemon.list_devices().is_empty());
+    }
+
+    #[tokio::test]
+    async fn each_address_is_tried_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let peer = Identity::generate().unwrap().id();
+        let mut device = TrustedDevice::new("bravo".into(), Some("10.0.0.2:47470".into()));
+        device.addrs.push("10.0.0.3:47470".into());
+        trust.devices.insert(peer.to_string(), device);
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+
+        // Announced: .3 then .2. Remembered: .2 then .3. Not adjacent duplicates.
+        let addrs = vec!["10.0.0.3:47470".parse().unwrap(), "10.0.0.2:47470".parse().unwrap()];
+        daemon.on_discovered(Discovered { id: peer, name: "bravo".into(), addrs });
+        let got: Vec<String> = daemon.known_addrs(peer).iter().map(|a| a.to_string()).collect();
+        assert_eq!(got, ["10.0.0.3:47470", "10.0.0.2:47470"]);
     }
 }
