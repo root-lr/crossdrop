@@ -37,6 +37,22 @@ pub mod services {
     pub const INTERDESK_INPUT: &str = "interdesk/input";
 }
 
+/// Longest device name kept from another device, in characters.
+pub const MAX_NAME_CHARS: usize = 64;
+
+/// Makes a name received from another device safe to show: no control or
+/// bidirectional-override characters (which can disguise a name), single
+/// spaces, at most [`MAX_NAME_CHARS`] characters. `None` if nothing is left.
+pub fn clean_device_name(raw: &str) -> Option<String> {
+    let bidi =
+        |c: char| matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let kept: String = raw.chars().map(|c| if c.is_control() { ' ' } else { c }).filter(|c| !bidi(*c)).collect();
+    let name = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name: String = name.chars().take(MAX_NAME_CHARS).collect();
+    let name = name.trim_end();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {
     #[error("i/o error: {0}")]
@@ -293,6 +309,17 @@ pub mod ipc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_names_are_cleaned() {
+        assert_eq!(clean_device_name("  bravo  ").as_deref(), Some("bravo"));
+        assert_eq!(clean_device_name("Mac\nBook\t Pro").as_deref(), Some("Mac Book Pro"));
+        // "alpha" shown with a right-to-left override reads "ahpla": dropped.
+        assert_eq!(clean_device_name("\u{202E}ahpla").as_deref(), Some("ahpla"));
+        assert_eq!(clean_device_name("\u{7}\u{200F} "), None);
+        assert_eq!(clean_device_name(&"é".repeat(100)).unwrap().chars().count(), MAX_NAME_CHARS);
+        assert_eq!(clean_device_name("Bureau de Léa").as_deref(), Some("Bureau de Léa"));
+    }
 
     #[tokio::test]
     async fn frame_roundtrip() {

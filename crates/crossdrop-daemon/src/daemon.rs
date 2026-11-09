@@ -502,6 +502,7 @@ impl Daemon {
                 .context("the other device did not answer in time")??;
         let _ = io.shutdown().await;
         let Pair::Response { accepted, name } = answer else { bail!("unexpected pairing message") };
+        let name = peer_name(&name);
         if accepted {
             self.add_trusted(pair.peer, name.clone(), pair.conn.remote_address())?;
             info!(peer = %name, id = %pair.peer.short(), "paired");
@@ -519,6 +520,7 @@ impl Daemon {
         let Pair::Request { name } = tokio::time::timeout(Duration::from_secs(30), read_frame(&mut io)).await?? else {
             bail!("unexpected pairing message");
         };
+        let name = peer_name(&name);
         let code = sas(&conn, self.id(), peer)?;
         let pair_id = self.new_token();
         let (tx, rx) = oneshot::channel();
@@ -776,6 +778,11 @@ impl Daemon {
 /// Connects to `addr`, giving up after [`DIAL_TIMEOUT`].
 async fn connect(node: &Node, addr: SocketAddr) -> Result<(Connection, DeviceId)> {
     tokio::time::timeout(DIAL_TIMEOUT, node.connect(addr)).await.map_err(|_| anyhow!("{addr} did not answer"))?
+}
+
+/// A name another device gave itself, safe to store and show.
+fn peer_name(raw: &str) -> String {
+    crossdrop_proto::clean_device_name(raw).unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]
