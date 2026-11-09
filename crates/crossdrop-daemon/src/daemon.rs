@@ -466,6 +466,16 @@ impl Daemon {
         let pair_id = self.new_token();
         let peer_name = self.device_name(peer);
         self.outgoing_pairs.lock().unwrap().insert(pair_id.clone(), OutgoingPair { conn, peer });
+        // A pairing whose user never confirms nor cancels (Ctrl+C, closed
+        // window) is dropped with its connection handle.
+        let this = self.clone();
+        let key = pair_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(PAIR_DECISION_TIMEOUT).await;
+            if this.outgoing_pairs.lock().unwrap().remove(&key).is_some() {
+                debug!(pair = %key, "pairing abandoned");
+            }
+        });
         Ok(Response::PairChallenge { pair_id, sas: code, peer_id: peer.to_string(), peer_name })
     }
 
@@ -809,5 +819,34 @@ mod tests {
         let conn = daemon.dial_peer(peer).await.unwrap();
         assert_eq!(conn.remote_address(), alive_addr);
         assert!(started.elapsed() < DIAL_TIMEOUT / 2, "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_pairing_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+
+        let other = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let addr = other.local_addr().unwrap();
+        tokio::spawn(async move {
+            let conn = other.accept().await.unwrap().await.unwrap();
+            conn.closed().await;
+        });
+
+        let Response::PairChallenge { pair_id, .. } = daemon.pair_start(&addr.to_string()).await.unwrap() else {
+            panic!("expected a challenge");
+        };
+        assert!(daemon.outgoing_pairs.lock().unwrap().contains_key(&pair_id));
+
+        // Let the expiry task start its timer, then jump past it.
+        tokio::task::yield_now().await;
+        tokio::time::pause();
+        tokio::time::advance(PAIR_DECISION_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(daemon.outgoing_pairs.lock().unwrap().is_empty());
+        assert!(daemon.pair_confirm(&pair_id, true).await.is_err());
     }
 }
