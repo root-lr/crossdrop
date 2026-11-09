@@ -73,6 +73,13 @@ Acceptance rules on the receiving device:
    stores the other in `trusted.toml` with the default permission
    `crossdrop/files`.
 
+## Unpairing (`crossdrop/unpair`)
+
+When the user forgets a device, the daemon first opens `crossdrop/unpair` to
+it (best effort, 3 s). The receiver, if it still trusts the sender, removes it
+from `trusted.toml`, closes the connection and answers `{"type":"accepted"}`.
+Any paired device may open this service, whatever its permissions.
+
 ## Files (`crossdrop/files`)
 
 ```

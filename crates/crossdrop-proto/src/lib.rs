@@ -28,6 +28,9 @@ pub const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
 pub mod services {
     /// Pairing handshake. The only service an unpaired device may open.
     pub const PAIR: &str = "crossdrop/pair";
+    /// Sent by a paired device that forgets this one, so that this one
+    /// forgets it too. Open to every paired device, whatever its permissions.
+    pub const UNPAIR: &str = "crossdrop/unpair";
     /// Built-in file and folder transfer.
     pub const FILES: &str = "crossdrop/files";
     /// Built-in clipboard sharing.

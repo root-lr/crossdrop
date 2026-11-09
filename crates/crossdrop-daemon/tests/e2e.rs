@@ -158,9 +158,9 @@ async fn pair_send_files_and_extension() {
     assert_eq!(&back, b"ping");
     server.await.unwrap();
 
-    // Unpairing revokes access.
+    // Unpairing revokes access, on both sides.
     client(&b).await.unpair("alpha").await.unwrap();
-    let err = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap_err();
+    let err = client(&a).await.open_channel(&b.id.to_string(), "crossdrop/files").await.unwrap_err();
     assert!(err.to_string().contains("not paired"), "{err}");
 
     a.shutdown();
@@ -254,4 +254,24 @@ async fn peer_restart_does_not_hang_the_next_transfer() {
     assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
     a.shutdown();
     b.shutdown();
+}
+
+#[tokio::test]
+async fn unpairing_is_mutual_and_works_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = daemon(dir.path(), "alpha").await;
+    let b = daemon(dir.path(), "bravo").await;
+    pair(&a, &b).await;
+
+    // bravo forgets alpha: alpha is told and forgets bravo too.
+    client(&b).await.unpair("alpha").await.unwrap();
+    let devices = client(&a).await.devices().await.unwrap();
+    assert!(devices.iter().all(|d| !d.paired), "alpha still trusts bravo: {devices:?}");
+
+    // With the other device gone, unpairing still works locally.
+    pair(&a, &b).await;
+    b.shutdown();
+    client(&a).await.unpair("bravo").await.unwrap();
+    assert!(client(&a).await.devices().await.unwrap().iter().all(|d| !d.paired));
+    a.shutdown();
 }

@@ -22,6 +22,8 @@ use crate::config::{Config, TrustStore, TrustedDevice};
 
 /// How long a user has to compare pairing codes.
 const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long unpairing waits to tell the other device.
+const UNPAIR_NOTICE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Pairing requests waiting for the local user at once (one per device).
 const MAX_PAIR_REQUESTS: usize = 8;
 /// How long the responder waits for the initiator to acknowledge the answer.
@@ -174,6 +176,14 @@ impl Daemon {
         let Some(device) = self.trusted(peer) else {
             return pending.reject("not paired").await;
         };
+        if service == services::UNPAIR {
+            let mut io = pending.accept().await?.into_io();
+            self.forget(peer)?;
+            info!(peer = %device.name, id = %peer.short(), "unpaired by the other device");
+            write_frame(&mut io, &ChannelReply::Accepted).await?;
+            let _ = io.shutdown().await;
+            return Ok(());
+        }
         if !device.allows(&service) {
             info!(peer = %device.name, %service, "channel refused: no permission");
             return pending.reject(format!("permission denied for {service}")).await;
@@ -566,6 +576,30 @@ impl Daemon {
         }
     }
 
+    /// Removes `peer` from the trust store and drops its connection.
+    fn forget(&self, peer: DeviceId) -> Result<()> {
+        {
+            let mut trust = self.trust.lock().unwrap();
+            if trust.devices.remove(&peer.to_string()).is_some() {
+                trust.save()?;
+            }
+        }
+        if let Some(conn) = self.conns.lock().unwrap().remove(&peer) {
+            conn.close(0u32.into(), b"unpaired");
+        }
+        Ok(())
+    }
+
+    /// Tells `peer` that this device forgets it.
+    async fn notify_unpair(self: &Arc<Self>, peer: DeviceId) -> Result<()> {
+        let mut io = self.channel_to(peer, services::UNPAIR).await?.into_io();
+        let reply: ChannelReply = read_frame(&mut io).await?;
+        if reply != ChannelReply::Accepted {
+            bail!("unpair notice refused");
+        }
+        Ok(())
+    }
+
     fn add_trusted(&self, peer: DeviceId, name: String, addr: SocketAddr) -> Result<()> {
         let mut trust = self.trust.lock().unwrap();
         let entry = trust.devices.entry(peer.to_string()).or_insert_with(|| TrustedDevice::new(name.clone(), None));
@@ -648,18 +682,15 @@ impl Daemon {
             }
             Request::Unpair { device } => {
                 let id = self.resolve_device(&device)?;
-                let removed = {
-                    let mut trust = self.trust.lock().unwrap();
-                    let removed = trust.devices.remove(&id.to_string()).is_some();
-                    trust.save()?;
-                    removed
-                };
-                if !removed {
+                if self.trusted(id).is_none() {
                     bail!("{device} is not paired");
                 }
-                if let Some(conn) = self.conns.lock().unwrap().remove(&id) {
-                    conn.close(0u32.into(), b"unpaired");
+                // Best effort: the other device may be offline, or too old to
+                // know this service; it then keeps a stale entry, as before.
+                if let Err(e) = tokio::time::timeout(UNPAIR_NOTICE_TIMEOUT, self.notify_unpair(id)).await {
+                    debug!(peer = %id.short(), "unpair notice not delivered: {e}");
                 }
+                self.forget(id)?;
                 Ok(Response::Ok)
             }
             Request::SetPermission { device, service, allow } => {
