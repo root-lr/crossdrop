@@ -142,6 +142,8 @@ impl Daemon {
     /// Remembers `conn` and dispatches the channels the peer opens on it.
     async fn serve_connection(self: Arc<Self>, peer: DeviceId, conn: Connection) {
         debug!(peer = %peer.short(), addr = %conn.remote_address(), "connected");
+        // Incoming or outgoing, the peer's endpoint is the one it listens on.
+        self.remember_addr(peer, conn.remote_address());
         self.conns.lock().unwrap().insert(peer, conn.clone());
         while let Ok(pending) = PendingChannel::next(&conn).await {
             let this = self.clone();
@@ -512,12 +514,20 @@ impl Daemon {
         let mut trust = self.trust.lock().unwrap();
         let entry = trust.devices.entry(peer.to_string()).or_insert_with(|| TrustedDevice::new(name.clone(), None));
         entry.name = name;
-        let addr = addr.to_string();
-        if !entry.addrs.contains(&addr) {
-            entry.addrs.insert(0, addr);
-            entry.addrs.truncate(4);
-        }
+        entry.remember_addr(addr.to_string());
         trust.save()
+    }
+
+    /// Records where a paired device was just reached, so that it can be
+    /// dialed again without mDNS after its address changed (DHCP).
+    fn remember_addr(&self, peer: DeviceId, addr: SocketAddr) {
+        let mut trust = self.trust.lock().unwrap();
+        let Some(entry) = trust.devices.get_mut(&peer.to_string()) else { return };
+        if entry.remember_addr(addr.to_string()) {
+            if let Err(e) = trust.save() {
+                warn!("cannot save {}: {e:#}", peer.short());
+            }
+        }
     }
 
     // ---------------------------------------------------------------- IPC

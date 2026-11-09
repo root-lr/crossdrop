@@ -89,6 +89,9 @@ fn clean_name(raw: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// How many last known addresses are kept per device.
+pub const MAX_ADDRS: usize = 4;
+
 /// A paired device and what it may do here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrustedDevice {
@@ -111,6 +114,18 @@ impl TrustedDevice {
             addrs: addr.into_iter().collect(),
             auto_accept: false,
         }
+    }
+
+    /// Puts `addr` first among the last known addresses (at most
+    /// [`MAX_ADDRS`]). Returns whether the list changed.
+    pub fn remember_addr(&mut self, addr: String) -> bool {
+        if self.addrs.first() == Some(&addr) {
+            return false;
+        }
+        self.addrs.retain(|a| *a != addr);
+        self.addrs.insert(0, addr);
+        self.addrs.truncate(MAX_ADDRS);
+        true
     }
 
     pub fn allows(&self, service: &str) -> bool {
@@ -175,6 +190,18 @@ mod tests {
         assert_eq!(clean_name(" \n"), None);
         assert_eq!(clean_name(".local"), None);
         assert!(!hostname().is_empty());
+    }
+
+    #[test]
+    fn latest_address_comes_first() {
+        let mut d = TrustedDevice::new("laptop".into(), Some("10.0.0.2:1".into()));
+        assert!(!d.remember_addr("10.0.0.2:1".into()));
+        for a in ["10.0.0.3:1", "10.0.0.4:1", "10.0.0.5:1", "10.0.0.6:1"] {
+            assert!(d.remember_addr(a.into()));
+        }
+        assert_eq!(d.addrs, ["10.0.0.6:1", "10.0.0.5:1", "10.0.0.4:1", "10.0.0.3:1"]);
+        assert!(d.remember_addr("10.0.0.4:1".into()));
+        assert_eq!(d.addrs, ["10.0.0.4:1", "10.0.0.6:1", "10.0.0.5:1", "10.0.0.3:1"]);
     }
 
     #[test]
