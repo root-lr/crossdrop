@@ -96,7 +96,8 @@ Any paired device may open this service, whatever its permissions.
 
 - `path` is relative, `/`-separated; its first component is the transfer
   root (a file name or a folder name). Folders are sent recursively;
-  symbolic links and empty folders are skipped.
+  symbolic links met inside a folder and empty folders are skipped; a link
+  named on the command line is followed.
 - `"desktop": true` in the offer asks for the files to land on the
   receiver's desktop. It is honoured, without asking, only when the sender
   is allowed `interdesk/input` on the receiver; otherwise the offer is

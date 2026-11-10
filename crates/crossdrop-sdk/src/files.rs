@@ -49,13 +49,14 @@ impl std::fmt::Display for Declined {
 
 impl std::error::Error for Declined {}
 
-/// Lists the files to send: plain files as-is, folders recursively (symbolic
-/// links are skipped). Returns entries with their source paths.
+/// Lists the files to send: plain files as-is, folders recursively. A
+/// symbolic link given here is followed (the user named it); links found
+/// inside folders are skipped. Returns entries with their source paths.
 pub fn collect(paths: &[PathBuf]) -> Result<Vec<(FileEntry, PathBuf)>> {
     let mut out = Vec::new();
     let mut roots = std::collections::HashSet::new();
     for path in paths {
-        let meta = std::fs::symlink_metadata(path).with_context(|| format!("{}", path.display()))?;
+        let meta = std::fs::metadata(path).with_context(|| format!("{}", path.display()))?;
         let root = root_name(path)?;
         if !roots.insert(root.clone()) {
             bail!("two items are named {root:?}; rename one of them");
@@ -206,5 +207,24 @@ mod tests {
         assert_eq!(items[0].0.size, 2);
 
         assert!(collect(&[photos.clone(), photos]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_links_are_followed_but_not_links_inside_folders() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        std::fs::write(real.join("sub").join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("note.txt"), "note").unwrap();
+        symlink(dir.path().join("note.txt"), real.join("inner-link")).unwrap();
+        symlink(dir.path().join("note.txt"), dir.path().join("link.txt")).unwrap();
+        symlink(&real, dir.path().join("folder-link")).unwrap();
+
+        let items = collect(&[dir.path().join("link.txt"), dir.path().join("folder-link")]).unwrap();
+        let paths: Vec<&str> = items.iter().map(|(e, _)| e.path.as_str()).collect();
+        assert_eq!(paths, ["link.txt", "folder-link/sub/a.txt"]);
+        assert_eq!(items[0].0.size, 4);
     }
 }
