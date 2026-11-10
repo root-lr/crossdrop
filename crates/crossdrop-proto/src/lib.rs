@@ -107,12 +107,14 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
+    // `read_exact` cannot tell "nothing" from "half a header": read the
+    // first byte on its own so that only a stream ending between frames
+    // counts as a clean close.
     let mut len = [0u8; 4];
-    match r.read_exact(&mut len).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Err(FrameError::Closed),
-        Err(e) => return Err(e.into()),
+    if r.read(&mut len[..1]).await? == 0 {
+        return Err(FrameError::Closed);
     }
+    r.read_exact(&mut len[1..]).await?;
     let len = u32::from_be_bytes(len);
     if len > max.min(MAX_FRAME_LEN) {
         return Err(FrameError::TooLarge(len));
@@ -395,6 +397,15 @@ mod tests {
         write_frame(&mut a, &big).await.unwrap();
         let err = read_frame_max::<_, wire::Pair>(&mut b, MAX_SMALL_FRAME_LEN).await.unwrap_err();
         assert!(matches!(err, FrameError::TooLarge(_)));
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_inside_a_header_is_an_error_not_a_close() {
+        let (mut a, mut b) = tokio::io::duplex(16);
+        tokio::io::AsyncWriteExt::write_all(&mut a, &[0, 0]).await.unwrap();
+        drop(a);
+        let err = read_frame::<_, wire::ChannelReply>(&mut b).await.unwrap_err();
+        assert!(matches!(err, FrameError::Io(_)), "{err:?}");
     }
 
     #[tokio::test]
