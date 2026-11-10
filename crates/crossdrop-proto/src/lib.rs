@@ -79,13 +79,16 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let body = serde_json::to_vec(msg)?;
-    let len = u32::try_from(body.len()).map_err(|_| FrameError::TooLarge(u32::MAX))?;
+    // Length and body in one buffer, so that a frame is one write: one
+    // syscall on the IPC socket, one QUIC stream frame rather than two.
+    let mut frame = vec![0u8; 4];
+    serde_json::to_writer(&mut frame, msg)?;
+    let len = u32::try_from(frame.len() - 4).map_err(|_| FrameError::TooLarge(u32::MAX))?;
     if len > MAX_FRAME_LEN {
         return Err(FrameError::TooLarge(len));
     }
-    w.write_all(&len.to_be_bytes()).await?;
-    w.write_all(&body).await?;
+    frame[..4].copy_from_slice(&len.to_be_bytes());
+    w.write_all(&frame).await?;
     w.flush().await?;
     Ok(())
 }
@@ -380,6 +383,39 @@ mod tests {
         write_frame(&mut a, &msg).await.unwrap();
         let got: wire::OpenChannel = read_frame(&mut b).await.unwrap();
         assert_eq!(got, msg);
+    }
+
+    /// Counts the writes a frame takes.
+    struct Writes(Vec<usize>);
+
+    impl tokio::io::AsyncWrite for Writes {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.push(buf.len());
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_is_written_at_once() {
+        let mut w = Writes(vec![]);
+        write_frame(&mut w, &wire::ChannelReply::Accepted).await.unwrap();
+        assert_eq!(w.0, [4 + r#"{"type":"accepted"}"#.len()]);
     }
 
     #[tokio::test]
