@@ -100,8 +100,22 @@ mod unix {
         path: PathBuf,
     }
 
+    /// Longest Unix socket path, in bytes (`sun_path` minus its final NUL).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const MAX_SOCKET_PATH: usize = 107;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const MAX_SOCKET_PATH: usize = 103;
+
     pub(crate) fn bind(paths: &Paths) -> Result<Listener> {
         let path = paths.ipc_endpoint();
+        let len = path.as_os_str().len();
+        if len > MAX_SOCKET_PATH {
+            bail!(
+                "the data directory {} is too deep for the daemon's socket ({len} bytes, at most {MAX_SOCKET_PATH} \
+                 with \"daemon.sock\"); use a shorter --home or CROSSDROP_HOME",
+                paths.home.display()
+            );
+        }
         if path.exists() {
             if std::os::unix::net::UnixStream::connect(&path).is_ok() {
                 bail!("a crossdrop daemon is already running for {}", paths.home.display());
@@ -190,5 +204,17 @@ mod windows {
         pub(crate) fn path(&self) -> PathBuf {
             self.path.clone()
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use crossdrop_sdk::Paths;
+
+    #[test]
+    fn a_too_deep_data_directory_is_explained() {
+        let home = std::env::temp_dir().join("x".repeat(120));
+        let err = super::bind(&Paths { home }).err().expect("must fail");
+        assert!(err.to_string().contains("too deep"), "{err}");
     }
 }

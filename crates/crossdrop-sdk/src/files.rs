@@ -49,13 +49,14 @@ impl std::fmt::Display for Declined {
 
 impl std::error::Error for Declined {}
 
-/// Lists the files to send: plain files as-is, folders recursively (symbolic
-/// links are skipped). Returns entries with their source paths.
+/// Lists the files to send: plain files as-is, folders recursively. A
+/// symbolic link given here is followed (the user named it); links found
+/// inside folders are skipped. Returns entries with their source paths.
 pub fn collect(paths: &[PathBuf]) -> Result<Vec<(FileEntry, PathBuf)>> {
     let mut out = Vec::new();
     let mut roots = std::collections::HashSet::new();
     for path in paths {
-        let meta = std::fs::symlink_metadata(path).with_context(|| format!("{}", path.display()))?;
+        let meta = std::fs::metadata(path).with_context(|| format!("{}", path.display()))?;
         let root = root_name(path)?;
         if !roots.insert(root.clone()) {
             bail!("two items are named {root:?}; rename one of them");
@@ -78,7 +79,7 @@ fn root_name(path: &Path) -> Result<String> {
         Some(n) => n.to_owned(),
         None => std::fs::canonicalize(path)?.file_name().map(|n| n.to_owned()).unwrap_or_default(),
     };
-    let name = name.to_string_lossy().into_owned();
+    let name = utf8_name(&name, path)?;
     if name.is_empty() {
         bail!("{} has no name", path.display());
     }
@@ -90,11 +91,21 @@ fn entry(path: String, meta: &std::fs::Metadata) -> FileEntry {
     FileEntry { path, size: meta.len(), mtime }
 }
 
+/// File names travel as UTF-8. A name in another encoding (old Linux
+/// systems, some archives) would be mangled, and two such names could end up
+/// identical on the other side: ask for a rename instead.
+fn utf8_name(name: &std::ffi::OsStr, path: &Path) -> Result<String> {
+    match name.to_str() {
+        Some(name) => Ok(name.to_string()),
+        None => bail!("{}: the name is not valid UTF-8; rename it to send it", path.display()),
+    }
+}
+
 fn walk(dir: &Path, rel: &str, out: &mut Vec<(FileEntry, PathBuf)>) -> Result<()> {
     for item in std::fs::read_dir(dir).with_context(|| format!("{}", dir.display()))? {
         let item = item?;
         let meta = std::fs::symlink_metadata(item.path())?;
-        let name = item.file_name().to_string_lossy().into_owned();
+        let name = utf8_name(&item.file_name(), &item.path())?;
         let child = format!("{rel}/{name}");
         if meta.is_file() {
             out.push((entry(child, &meta), item.path()));
@@ -206,5 +217,34 @@ mod tests {
         assert_eq!(items[0].0.size, 2);
 
         assert!(collect(&[photos.clone(), photos]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_links_are_followed_but_not_links_inside_folders() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        std::fs::write(real.join("sub").join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("note.txt"), "note").unwrap();
+        symlink(dir.path().join("note.txt"), real.join("inner-link")).unwrap();
+        symlink(dir.path().join("note.txt"), dir.path().join("link.txt")).unwrap();
+        symlink(&real, dir.path().join("folder-link")).unwrap();
+
+        let items = collect(&[dir.path().join("link.txt"), dir.path().join("folder-link")]).unwrap();
+        let paths: Vec<&str> = items.iter().map(|(e, _)| e.path.as_str()).collect();
+        assert_eq!(paths, ["link.txt", "folder-link/sub/a.txt"]);
+        assert_eq!(items[0].0.size, 4);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn names_that_are_not_utf8_are_refused() {
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.txt"); // Latin-1
+        let err = utf8_name(name, Path::new("/x/caf?.txt")).unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "{err}");
+        assert_eq!(utf8_name(std::ffi::OsStr::new("café.txt"), Path::new("x")).unwrap(), "café.txt");
     }
 }

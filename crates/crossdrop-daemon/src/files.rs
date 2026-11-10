@@ -47,6 +47,10 @@ pub async fn read_offer<S: AsyncRead + Unpin>(io: &mut S) -> Result<Offer> {
     if entries.is_empty() || entries.len() > MAX_ENTRIES {
         bail!("offer with {} files refused", entries.len());
     }
+    let mut seen = std::collections::HashSet::new();
+    if let Some(dup) = entries.iter().find(|e| !seen.insert(e.path.as_str())) {
+        bail!("offer lists {:?} twice", dup.path);
+    }
     let parts = entries.iter().map(|e| sanitize_path(&e.path)).collect::<Result<Vec<_>>>()?;
     Ok(Offer { entries, desktop, parts })
 }
@@ -244,20 +248,10 @@ async fn expect_file_end<S: AsyncRead + Unpin>(io: &mut S) -> Result<String> {
 }
 
 /// Splits an offered path into safe components: no `..`, no absolute paths,
-/// no characters Windows forbids, no control characters.
+/// no characters Windows forbids, no control characters, no names Windows
+/// reserves for devices.
 fn sanitize_path(path: &str) -> Result<Vec<String>> {
-    let parts: Vec<String> = path
-        .split('/')
-        .map(|c| {
-            c.chars()
-                .filter(|ch| !ch.is_control())
-                .map(|ch| if "\\:*?\"<>|".contains(ch) { '_' } else { ch })
-                .collect::<String>()
-                .trim()
-                .trim_end_matches('.')
-                .to_string()
-        })
-        .collect();
+    let parts: Vec<String> = path.split('/').map(|c| sanitize_component(c, cfg!(windows))).collect();
     if parts.iter().any(|p| p.is_empty() || p == "..") {
         bail!("invalid path {path:?}");
     }
@@ -265,6 +259,56 @@ fn sanitize_path(path: &str) -> Result<Vec<String>> {
         bail!("reserved name {path:?}");
     }
     Ok(parts)
+}
+
+/// One path component made safe to create. `windows`: also avoid the device
+/// names Windows reserves (`CON`, `nul.txt`, `COM1.log`…), which cannot be
+/// created as files there, by prefixing them with `_`.
+fn sanitize_component(c: &str, windows: bool) -> String {
+    let name = c
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .map(|ch| if "\\:*?\"<>|".contains(ch) { '_' } else { ch })
+        .collect::<String>()
+        .trim()
+        .trim_end_matches('.')
+        .to_string();
+    let name = if windows && is_windows_device_name(&name) { format!("_{name}") } else { name };
+    shorten(name)
+}
+
+/// Longest component kept, in bytes. File systems allow 255; the margin
+/// leaves room for the " (1)" a name gets when it is already taken.
+const MAX_COMPONENT_BYTES: usize = 240;
+
+/// Cuts a name too long for the file system, keeping its extension.
+fn shorten(name: String) -> String {
+    if name.len() <= MAX_COMPONENT_BYTES {
+        return name;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 16 => (stem, format!(".{ext}")),
+        _ => (name.as_str(), String::new()),
+    };
+    let mut cut = MAX_COMPONENT_BYTES - ext.len();
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{ext}", stem[..cut].trim_end())
+}
+
+/// `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` (and the
+/// superscript-digit forms), whatever the case and the extension.
+fn is_windows_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    match stem.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            let (prefix, digit) = stem.split_at(stem.len().min(3));
+            matches!(prefix, "COM" | "LPT")
+                && matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+        }
+    }
 }
 
 /// A name for `root` that exists neither in `dir` nor among `taken`.
@@ -300,6 +344,39 @@ mod tests {
         assert!(sanitize_path("a//b").is_err());
         assert!(sanitize_path(".crossdrop-partial/x").is_err());
         assert_eq!(sanitize_path("dir/.gitignore").unwrap(), ["dir", ".gitignore"]);
+    }
+
+    #[test]
+    fn windows_device_names_are_renamed_there_only() {
+        for name in ["CON", "con.txt", "Nul.tar.gz", "COM1.log", "lpt9", "AUX ", "aux.c.orig", "com²"] {
+            assert_eq!(sanitize_component(name, true), format!("_{}", name.trim()), "{name}");
+        }
+        for name in ["CONSOLE", "com10", "COM0", "nullable.txt", "lpt", "my.con"] {
+            assert_eq!(sanitize_component(name, true), name, "{name}");
+        }
+        // Elsewhere these are ordinary names (Linux has drivers/…/aux.c).
+        assert_eq!(sanitize_component("aux.c", false), "aux.c");
+    }
+
+    #[test]
+    fn long_names_are_cut_keeping_the_extension() {
+        let long = format!("{}.jpeg", "é".repeat(200));
+        let short = sanitize_component(&long, false);
+        assert!(short.len() <= MAX_COMPONENT_BYTES, "{} bytes", short.len());
+        assert!(short.ends_with("é.jpeg"), "{short}");
+        let no_ext = sanitize_component(&"x".repeat(300), false);
+        assert_eq!(no_ext.len(), MAX_COMPONENT_BYTES);
+        assert_eq!(sanitize_component("photo.jpeg", false), "photo.jpeg");
+    }
+
+    #[tokio::test]
+    async fn an_offer_with_the_same_path_twice_is_refused() {
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        let entry = FileEntry { path: "photos/a.jpg".into(), size: 1, mtime: 0 };
+        let offer = Files::Offer { entries: vec![entry.clone(), entry], desktop: false };
+        write_frame(&mut a, &offer).await.unwrap();
+        let err = read_offer(&mut b).await.err().unwrap();
+        assert!(err.to_string().contains("twice"), "{err}");
     }
 
     #[test]
