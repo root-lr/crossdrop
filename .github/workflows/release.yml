@@ -130,3 +130,26 @@ jobs:
             tar czf "$name.tar.gz" "$name"
           fi
           gh release upload "$VERSION" "$name.${{ matrix.archive }}" --clobber
+
+  checksums:
+    name: Checksums
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # One SHA256SUMS for every file of the release, installers included,
+      # so that a download can be checked with `sha256sum -c SHA256SUMS`.
+      - name: Hash the release assets
+        run: |
+          # The release is still a draft, which `gh release download` cannot
+          # see: find it by tag and fetch its assets by id.
+          repo="${{ github.repository }}"
+          id=$(gh api "repos/$repo/releases" --jq ".[] | select(.tag_name == \"$VERSION\") | .id" | head -1)
+          mkdir assets && cd assets
+          gh api "repos/$repo/releases/$id/assets" --paginate --jq '.[] | "\(.id) \(.name)"' |
+            while read -r asset name; do
+              [ "$name" = SHA256SUMS ] && continue
+              gh api -H "Accept: application/octet-stream" "repos/$repo/releases/assets/$asset" > "$name"
+            done
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$VERSION" SHA256SUMS --repo "$repo" --clobber
