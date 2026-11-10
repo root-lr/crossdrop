@@ -84,7 +84,8 @@ export default function App() {
         const device = target(p.position.x, p.position.y);
         setHover(null);
         if (device) {
-          api.sendFiles(device, p.paths).catch((err) => setNotice(String(err)));
+          const label = devicesRef.current.find((d) => d.id === device)?.name ?? device;
+          api.sendFiles(device, p.paths, false, label).catch((err) => setNotice(String(err)));
         }
       } else {
         setHover(null);
@@ -110,10 +111,10 @@ export default function App() {
   const deviceNamed = (name: string) => data.devices.find((d) => d.name.toLowerCase() === name.toLowerCase());
   const list = Object.values(transfers).sort((a, b) => b.id - a.id);
 
-  const sendWithPicker = async (device: string) => {
-    const picked = await open({ multiple: true, title: `Send to ${device}` });
+  const sendWithPicker = async (device: Device) => {
+    const picked = await open({ multiple: true, title: `Send to ${device.name}` });
     const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
-    if (paths.length) act(() => api.sendFiles(device, paths));
+    if (paths.length) act(() => api.sendFiles(device.id, paths, false, device.name));
   };
 
   return (
@@ -155,12 +156,14 @@ export default function App() {
             {SIDES.map((side) => {
               const name = bySide[side];
               const dev = name ? deviceNamed(name) : undefined;
+              // Drop on the device itself when the layout name is known.
+              const drop = dev?.id ?? name;
               return (
                 <div key={side} className={`slot slot-${side}`}>
                   {name ? (
                     <div
-                      className={`neighbour ${hover === name ? "hover" : ""} ${dev?.online ? "online" : ""}`}
-                      data-drop={name}
+                      className={`neighbour ${hover === drop ? "hover" : ""} ${dev?.online ? "online" : ""}`}
+                      data-drop={drop}
                     >
                       <strong>{name}</strong>
                       <span>{dev?.online ? "Drop files here" : "Offline"}</span>
@@ -215,8 +218,8 @@ export default function App() {
               <DeviceRow
                 key={d.id}
                 device={d}
-                hover={hover === d.name}
-                onSend={() => sendWithPicker(d.name)}
+                hover={hover === d.id}
+                onSend={() => sendWithPicker(d)}
                 act={act}
               />
             ))}
@@ -334,9 +337,10 @@ function DeviceRow({
 }) {
   const [open, setOpen] = useState(false);
   const allows = (s: string) => d.permissions.includes(s);
-  const toggle = (service: string) => act(() => api.setPermission(d.name, service, !allows(service)));
+  // By id: two devices may share a name ("MacBook-Pro").
+  const toggle = (service: string) => act(() => api.setPermission(d.id, service, !allows(service)));
   return (
-    <li className={`device paired ${hover ? "hover" : ""}`} data-drop={d.name}>
+    <li className={`device paired ${hover ? "hover" : ""}`} data-drop={d.id}>
       <div className="device-head">
         <span className={`dot ${d.online ? "on" : ""}`} aria-hidden />
         <strong>{d.name}</strong>
@@ -353,7 +357,7 @@ function DeviceRow({
           <Toggle checked={allows(SERVICES.files)} onChange={() => toggle(SERVICES.files)}>
             May send me files
           </Toggle>
-          <Toggle checked={d.auto_accept} onChange={() => act(() => api.setAutoAccept(d.name, !d.auto_accept))}>
+          <Toggle checked={d.auto_accept} onChange={() => act(() => api.setAutoAccept(d.id, !d.auto_accept))}>
             Receive its files without asking
           </Toggle>
           <Toggle checked={allows(SERVICES.clipboard)} onChange={() => toggle(SERVICES.clipboard)}>
@@ -375,7 +379,7 @@ function DeviceRow({
           <button
             className="danger"
             onClick={() => {
-              if (window.confirm(`Forget ${d.name}? You will need to pair again.`)) act(() => api.unpair(d.name));
+              if (window.confirm(`Forget ${d.name}? You will need to pair again.`)) act(() => api.unpair(d.id));
             }}
           >
             Forget {d.name}
