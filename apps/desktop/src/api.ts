@@ -35,6 +35,8 @@ export interface Overview {
   pairs: PairRequest[];
   offers: Offer[];
   layout: { device: string; side: Side }[];
+  /** interdesk.toml could not be read: why. */
+  layout_error: string | null;
   sharing: boolean;
   embedded: boolean;
 }
