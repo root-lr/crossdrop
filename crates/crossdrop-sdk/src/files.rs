@@ -88,7 +88,18 @@ fn root_name(path: &Path) -> Result<String> {
 
 fn entry(path: String, meta: &std::fs::Metadata) -> FileEntry {
     let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-    FileEntry { path, size: meta.len(), mtime }
+    FileEntry { path, size: meta.len(), mtime, executable: is_executable(meta) }
+}
+
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// File names travel as UTF-8. A name in another encoding (old Linux
@@ -114,6 +125,38 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(FileEntry, PathBuf)>) -> Result<()
         }
     }
     Ok(())
+}
+
+/// The folders under `paths` that hold nothing to send (no file, no
+/// folder), relative like entry paths. The receiver creates them, and with
+/// them every folder above.
+pub fn empty_dirs(paths: &[PathBuf]) -> Result<Vec<String>> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<()> {
+        let mut children = 0;
+        for item in std::fs::read_dir(dir).with_context(|| format!("{}", dir.display()))? {
+            let item = item?;
+            let meta = std::fs::symlink_metadata(item.path())?;
+            if meta.is_file() {
+                children += 1;
+            } else if meta.is_dir() {
+                children += 1;
+                let child = format!("{rel}/{}", item.file_name().to_string_lossy());
+                walk(&item.path(), &child, out)?;
+            }
+        }
+        if children == 0 {
+            out.push(rel.to_string());
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    for path in paths {
+        if std::fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+            walk(path, &root_name(path)?, &mut out)?;
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// Options for [`send_files_with`].
@@ -146,12 +189,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let items = collect(paths)?;
-    if items.is_empty() {
-        bail!("nothing to send (empty folders only)");
+    let dirs = empty_dirs(paths)?;
+    if items.is_empty() && dirs.is_empty() {
+        bail!("nothing to send");
     }
     let total: u64 = items.iter().map(|(e, _)| e.size).sum();
     let entries: Vec<FileEntry> = items.iter().map(|(e, _)| e.clone()).collect();
-    write_frame(io, &Files::Offer { entries, desktop: options.to_desktop }).await?;
+    write_frame(io, &Files::Offer { entries, desktop: options.to_desktop, dirs }).await?;
     on_event(SendEvent::Waiting { files: items.len(), bytes: total });
 
     let offsets = match read_frame::<_, Files>(io).await? {
@@ -200,6 +244,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_folders_are_listed_once_at_their_deepest() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        std::fs::create_dir_all(photos.join("2026").join("empty")).unwrap();
+        std::fs::create_dir_all(photos.join("a").join("b")).unwrap();
+        std::fs::write(photos.join("2026").join("x.jpg"), "x").unwrap();
+        std::fs::create_dir(dir.path().join("blank")).unwrap();
+
+        let dirs = empty_dirs(&[photos, dir.path().join("blank")]).unwrap();
+        assert_eq!(dirs, ["blank", "photos/2026/empty", "photos/a/b"]);
+    }
 
     #[test]
     fn collect_walks_folders_and_rejects_duplicates() {

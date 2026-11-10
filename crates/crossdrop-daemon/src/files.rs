@@ -30,6 +30,8 @@ pub struct Offer {
     pub desktop: bool,
     /// Sanitized path components of each entry.
     parts: Vec<Vec<String>>,
+    /// Sanitized path components of each empty folder to create.
+    dirs: Vec<Vec<String>>,
 }
 
 impl Offer {
@@ -40,19 +42,21 @@ impl Offer {
 
 /// Reads and validates the sender's offer.
 pub async fn read_offer<S: AsyncRead + Unpin>(io: &mut S) -> Result<Offer> {
-    let (entries, desktop) = match read_frame::<_, Files>(io).await? {
-        Files::Offer { entries, desktop } => (entries, desktop),
+    let (entries, desktop, dirs) = match read_frame::<_, Files>(io).await? {
+        Files::Offer { entries, desktop, dirs } => (entries, desktop, dirs),
         other => bail!("expected an offer, got {other:?}"),
     };
-    if entries.is_empty() || entries.len() > MAX_ENTRIES {
-        bail!("offer with {} files refused", entries.len());
+    let items = entries.len() + dirs.len();
+    if items == 0 || items > MAX_ENTRIES {
+        bail!("offer with {} files and {} folders refused", entries.len(), dirs.len());
     }
     let mut seen = std::collections::HashSet::new();
     if let Some(dup) = entries.iter().find(|e| !seen.insert(e.path.as_str())) {
         bail!("offer lists {:?} twice", dup.path);
     }
+    let dirs = dirs.iter().map(|d| sanitize_path(d)).collect::<Result<Vec<_>>>()?;
     let parts = entries.iter().map(|e| sanitize_path(&e.path)).collect::<Result<Vec<_>>>()?;
-    Ok(Offer { entries, desktop, parts })
+    Ok(Offer { entries, desktop, parts, dirs })
 }
 
 pub async fn decline<S: AsyncWrite + Unpin>(io: &mut S) -> Result<()> {
@@ -133,7 +137,7 @@ where
         std::fs::read(&journal_path).ok().and_then(|b| serde_json::from_slice::<Journal>(&b).ok()).unwrap_or_default();
     let mut t = Transfer { dir: dir.to_path_buf(), journal_path, journal };
 
-    for parts in &offer.parts {
+    for parts in offer.parts.iter().chain(&offer.dirs) {
         if !t.journal.roots.contains_key(&parts[0]) {
             let chosen = unique_name(dir, &parts[0], t.journal.roots.values());
             t.journal.roots.insert(parts[0].clone(), chosen);
@@ -210,10 +214,16 @@ where
         }
         let target = if target.exists() { unique_path(&target) } else { target };
         tokio::fs::rename(&part, &target).await?;
+        restore_metadata(&target, entry);
         t.journal.done.insert(entry.path.clone(), actual);
         t.save()?;
         info!(from, file = %target.display(), size = entry.size, resumed = offset, "file received");
         received += 1;
+    }
+
+    for parts in &offer.dirs {
+        let folder = t.target(parts);
+        tokio::fs::create_dir_all(&folder).await.with_context(|| format!("{}", folder.display()))?;
     }
 
     match read_frame::<_, Files>(io).await? {
@@ -222,6 +232,32 @@ where
     }
     let _ = std::fs::remove_file(&t.journal_path);
     Ok(received)
+}
+
+/// Gives a received file the sender's modification time and, on Unix, its
+/// executable bit. Best effort: a file system that refuses only loses the
+/// metadata, not the file.
+fn restore_metadata(target: &Path, entry: &FileEntry) {
+    #[cfg(unix)]
+    if entry.executable {
+        use std::os::unix::fs::PermissionsExt;
+        // Executable by whoever may read it, as `chmod +x` does.
+        let set = std::fs::metadata(target).and_then(|m| {
+            let mode = m.permissions().mode();
+            std::fs::set_permissions(target, std::fs::Permissions::from_mode(mode | (mode & 0o444) >> 2))
+        });
+        if let Err(e) = set {
+            warn!(file = %target.display(), "cannot make it executable: {e}");
+        }
+    }
+    if entry.mtime == 0 {
+        return;
+    }
+    let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(entry.mtime);
+    let set = std::fs::File::options().write(true).open(target).and_then(|f| f.set_modified(mtime));
+    if let Err(e) = set {
+        warn!(file = %target.display(), "cannot set the modification time: {e}");
+    }
 }
 
 /// Deletes abandoned partial files and journals.
@@ -372,8 +408,8 @@ mod tests {
     #[tokio::test]
     async fn an_offer_with_the_same_path_twice_is_refused() {
         let (mut a, mut b) = tokio::io::duplex(4096);
-        let entry = FileEntry { path: "photos/a.jpg".into(), size: 1, mtime: 0 };
-        let offer = Files::Offer { entries: vec![entry.clone(), entry], desktop: false };
+        let entry = FileEntry { path: "photos/a.jpg".into(), size: 1, mtime: 0, executable: false };
+        let offer = Files::Offer { entries: vec![entry.clone(), entry], desktop: false, dirs: vec![] };
         write_frame(&mut a, &offer).await.unwrap();
         let err = read_offer(&mut b).await.err().unwrap();
         assert!(err.to_string().contains("twice"), "{err}");
@@ -464,5 +500,56 @@ mod tests {
         assert!(receiver.await.unwrap().is_err());
         assert!(!part.exists(), "a corrupted partial file must be discarded");
         assert!(!dl.join("f.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn received_files_keep_their_modification_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("old.txt");
+        std::fs::write(&src, "from 2020").unwrap();
+        let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        std::fs::File::options().write(true).open(&src).unwrap().set_modified(then).unwrap();
+        let dl = dir.path().join("dl");
+
+        transfer(&[src], &dl).await;
+        let got = std::fs::metadata(dl.join("old.txt")).unwrap().modified().unwrap();
+        assert_eq!(got, then);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn executables_stay_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = dir.path().join("tools");
+        std::fs::create_dir(&tools).unwrap();
+        std::fs::write(tools.join("run.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(tools.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(tools.join("notes.txt"), "plain").unwrap();
+        std::fs::set_permissions(tools.join("notes.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let dl = dir.path().join("dl");
+
+        transfer(&[tools], &dl).await;
+        let mode = |name: &str| std::fs::metadata(dl.join("tools").join(name)).unwrap().permissions().mode();
+        assert_ne!(mode("run.sh") & 0o100, 0, "run.sh lost its executable bit");
+        assert_eq!(mode("notes.txt") & 0o111, 0, "notes.txt became executable");
+    }
+
+    #[tokio::test]
+    async fn empty_folders_are_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(project.join("build").join("cache")).unwrap();
+        std::fs::write(project.join("src").join("main.rs"), "fn main() {}").unwrap();
+        let blank = dir.path().join("blank");
+        std::fs::create_dir(&blank).unwrap();
+        let dl = dir.path().join("dl");
+
+        let (report, _) = transfer(&[project, blank], &dl).await;
+        assert_eq!(report.received, 1);
+        assert!(dl.join("project/src/main.rs").is_file());
+        assert!(dl.join("project/build/cache").is_dir());
+        assert!(dl.join("blank").is_dir());
     }
 }

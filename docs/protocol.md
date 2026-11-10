@@ -96,8 +96,13 @@ Any paired device may open this service, whatever its permissions.
 
 - `path` is relative, `/`-separated; its first component is the transfer
   root (a file name or a folder name). Folders are sent recursively;
-  symbolic links met inside a folder and empty folders are skipped; a link
-  named on the command line is followed.
+  symbolic links met inside a folder are skipped, a link named on the
+  command line is followed, and empty folders go in `dirs` (below).
+- `mtime` is given back to the received file. `"executable": true` (omitted
+  when false) marks a Unix executable; the receiver sets its `x` bits.
+- `"dirs": ["photos/empty", …]` (omitted when empty) lists the empty
+  folders to create, with the same path rules; an offer may hold only
+  folders.
 - `"desktop": true` in the offer asks for the files to land on the
   receiver's desktop. It is honoured, without asking, only when the sender
   is allowed `interdesk/input` on the receiver; otherwise the offer is
