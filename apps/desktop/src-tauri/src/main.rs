@@ -447,6 +447,16 @@ fn main() {
 
     let paths = Paths::resolve(None).expect("no data directory");
     tauri::Builder::default()
+        // A second launch shows this window instead of starting a second app
+        // (and a second capture of the mouse and keyboard). Registered first,
+        // as the plugin asks.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(App {
             paths,
