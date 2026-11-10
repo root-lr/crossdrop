@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Main window and drop zones",
   "windows": ["main", "dz-*"],
-  "permissions": ["core:default", "dialog:allow-open", "notification:default"]
+  "permissions": ["core:default", "dialog:allow-open", "autostart:default", "notification:default"]
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import {
@@ -324,6 +325,9 @@ export default function App() {
               </li>
             ))}
           </ul>
+
+          <h2>This computer</h2>
+          <StartAtLogin onError={setNotice} />
         </aside>
       </div>
 
@@ -454,6 +458,28 @@ function DeviceRow({
         </div>
       )}
     </li>
+  );
+}
+
+/** Starts the app, and so its daemon, when the user logs in. */
+function StartAtLogin({ onError }: { onError: (message: string) => void }) {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    isEnabled().then(setOn, () => setOn(false));
+  }, []);
+  if (on === null) return null;
+  const toggle = async () => {
+    try {
+      await (on ? disable() : enable());
+      setOn(await isEnabled());
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  return (
+    <Toggle checked={on} onChange={toggle}>
+      Open crossdrop when I log in, so that other devices can reach this one
+    </Toggle>
   );
 }
 
