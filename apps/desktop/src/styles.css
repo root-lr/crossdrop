@@ -481,6 +481,13 @@ input:focus-visible + .track {
   margin-top: 10px;
 }
 
+.transfers-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .transfers {
   list-style: none;
   margin: 0;

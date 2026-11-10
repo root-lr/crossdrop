@@ -289,7 +289,21 @@ export default function App() {
             </div>
           ))}
 
-          <h2>Transfers</h2>
+          <div className="transfers-head">
+            <h2>Transfers</h2>
+            {list.some((t) => FINISHED.includes(t.state)) && (
+              <button
+                className="link quiet"
+                onClick={() =>
+                  setTransfers((all) =>
+                    Object.fromEntries(Object.entries(all).filter(([, t]) => !FINISHED.includes(t.state))),
+                  )
+                }
+              >
+                Clear finished
+              </button>
+            )}
+          </div>
           {list.length === 0 && <p className="hint">Drop files on a device to send them.</p>}
           <ul className="transfers">
             {list.map((t) => (
@@ -325,6 +339,9 @@ export default function App() {
     </div>
   );
 }
+
+/** Transfers that will not change any more. */
+const FINISHED: Transfer["state"][] = ["done", "declined", "failed"];
 
 /** Asks the system to show a notification, requesting permission the first time. */
 async function notify(title: string, body: string) {
