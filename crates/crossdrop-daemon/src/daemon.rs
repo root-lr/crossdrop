@@ -12,7 +12,7 @@ use crossdrop_core::{
 };
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
-use crossdrop_proto::{read_frame, services, write_frame};
+use crossdrop_proto::{read_frame, read_frame_max, services, write_frame, MAX_SMALL_FRAME_LEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -506,10 +506,12 @@ impl Daemon {
         }
         let mut io = open_channel(&pair.conn, services::PAIR).await?.into_io();
         write_frame(&mut io, &Pair::Request { name: self.config.name.clone() }).await?;
-        let answer =
-            tokio::time::timeout(PAIR_DECISION_TIMEOUT + Duration::from_secs(10), read_frame::<_, Pair>(&mut io))
-                .await
-                .context("the other device did not answer in time")??;
+        let answer = tokio::time::timeout(
+            PAIR_DECISION_TIMEOUT + Duration::from_secs(10),
+            read_frame_max::<_, Pair>(&mut io, MAX_SMALL_FRAME_LEN),
+        )
+        .await
+        .context("the other device did not answer in time")??;
         let _ = io.shutdown().await;
         let Pair::Response { accepted, name } = answer else { bail!("unexpected pairing message") };
         let name = peer_name(&name);
@@ -527,7 +529,9 @@ impl Daemon {
         pending: PendingChannel,
     ) -> Result<()> {
         let mut io = pending.accept().await?.into_io();
-        let Pair::Request { name } = tokio::time::timeout(Duration::from_secs(30), read_frame(&mut io)).await?? else {
+        let Pair::Request { name } =
+            tokio::time::timeout(Duration::from_secs(30), read_frame_max(&mut io, MAX_SMALL_FRAME_LEN)).await??
+        else {
             bail!("unexpected pairing message");
         };
         let name = peer_name(&name);

@@ -36,8 +36,9 @@ Devices can also be reached by `ip:port` when multicast is blocked.
 ## Framing
 
 Control messages are frames: a big-endian `u32` length, then a UTF-8 JSON body
-(max 8 MiB). Tagged enums use a `"type"` field in `snake_case`. Bulk data is
-never framed.
+(max 8 MiB; 4 KiB for channel headers and replies and for pairing messages,
+which any device on the network may send). Tagged enums use a `"type"` field
+in `snake_case`. Bulk data is never framed.
 
 ## Channels
 
