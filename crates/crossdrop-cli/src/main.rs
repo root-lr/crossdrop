@@ -187,6 +187,21 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(9)]
 }
 
+/// `, 12.3 MiB/s, 1:05 left` once enough has been sent to tell.
+fn speed(sent: u64, secs: f64, left: u64) -> String {
+    if secs < 0.5 || sent == 0 {
+        return String::new();
+    }
+    let rate = sent as f64 / secs;
+    let eta = (left as f64 / rate).round() as u64;
+    let eta = match eta {
+        0 => String::new(),
+        s if s < 3600 => format!(", {}:{:02} left", s / 60, s % 60),
+        s => format!(", {}:{:02}:{:02} left", s / 3600, s / 60 % 60, s % 60),
+    };
+    format!(", {}/s{eta}", human(rate as u64))
+}
+
 /// A size in binary units (1 KiB = 1024 B), named as such.
 fn human(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -487,12 +502,15 @@ async fn send_to(paths: &Paths, to: &str, files: &[PathBuf]) -> Result<()> {
     let mut stream = Client::connect(paths.clone()).await?.open_channel(to, "crossdrop/files").await?;
     let started = Instant::now();
     let mut last = Instant::now();
+    // When the bytes started to flow, and how many were already there.
+    let mut flowing = (Instant::now(), 0u64);
     let tty = std::io::stderr().is_terminal();
     let mut on_event = |event: SendEvent<'_>| match event {
         SendEvent::Waiting { files, bytes } => {
             eprintln!("Offering {files} file(s), {} to {to}…", human(bytes));
         }
         SendEvent::Accepted { resumed } => {
+            flowing = (Instant::now(), resumed);
             if resumed > 0 {
                 eprintln!("Accepted. Resuming: {} already there.", human(resumed));
             }
@@ -504,7 +522,8 @@ async fn send_to(paths: &Paths, to: &str, files: &[PathBuf]) -> Result<()> {
             if done == total || last.elapsed().as_millis() > every {
                 last = Instant::now();
                 let pct = (done * 100).checked_div(total).unwrap_or(100);
-                let line = format!("{pct:>3}%  {} / {}  {path}", human(done), human(total));
+                let speed = speed(done - flowing.1, flowing.0.elapsed().as_secs_f64(), total - done);
+                let line = format!("{pct:>3}%  {} / {}{speed}  {path}", human(done), human(total));
                 if tty {
                     eprint!("\r\x1b[K{line}");
                     if done == total {
@@ -632,6 +651,14 @@ fn accessibility_allowed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speed_and_time_left() {
+        assert_eq!(speed(10 << 20, 0.1, 1 << 30), "", "too early to tell");
+        assert_eq!(speed(10 << 20, 2.0, 30 << 20), ", 5.0 MiB/s, 0:06 left");
+        assert_eq!(speed(1 << 20, 1.0, 4000 << 20), ", 1.0 MiB/s, 1:06:40 left");
+        assert_eq!(speed(1 << 20, 1.0, 0), ", 1.0 MiB/s");
+    }
 
     #[test]
     fn sizes_use_binary_unit_names() {
