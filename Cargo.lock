@@ -367,6 +367,7 @@ dependencies = [
  "crossdrop-sdk",
  "dirs",
  "gethostname",
+ "getrandom 0.4.3",
  "quinn",
  "serde",
  "serde_json",

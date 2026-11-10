@@ -2,9 +2,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_core::{
@@ -75,7 +74,6 @@ pub(crate) struct Daemon {
     clip_known: Mutex<Option<String>>,
     /// Last text received from a peer, with the sender's name.
     clip_received: Mutex<Option<(String, String)>>,
-    counter: AtomicU64,
 }
 
 impl Daemon {
@@ -94,7 +92,6 @@ impl Daemon {
             clipboard,
             clip_known: Mutex::default(),
             clip_received: Mutex::default(),
-            counter: AtomicU64::new(0),
         })
     }
 
@@ -102,14 +99,12 @@ impl Daemon {
         self.node.id()
     }
 
+    /// A fresh unguessable id (128 bits, hex) for a channel, an offer or a
+    /// pairing. Channel ids are what a local client presents to attach.
     fn new_token(&self) -> String {
-        let n = self.counter.fetch_add(1, Ordering::Relaxed);
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let mut h = blake3::Hasher::new();
-        h.update(self.id().as_bytes());
-        h.update(&n.to_le_bytes());
-        h.update(&t.to_le_bytes());
-        h.finalize().to_hex()[..16].to_string()
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("the OS random number generator failed");
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     fn trusted(&self, id: DeviceId) -> Option<TrustedDevice> {
@@ -1037,5 +1032,17 @@ mod tests {
 
         let next = tokio::time::timeout(Duration::from_secs(2), open_channel(&conn, services::PAIR)).await;
         assert!(matches!(next, Ok(Ok(_))), "the second channel was held up");
+    }
+
+    #[tokio::test]
+    async fn tokens_are_random_and_long() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+        let (a, b) = (daemon.new_token(), daemon.new_token());
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 }
