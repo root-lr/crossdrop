@@ -343,6 +343,7 @@ dependencies = [
  "crossdrop-daemon",
  "crossdrop-proto",
  "crossdrop-sdk",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
 ]

@@ -17,6 +17,10 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     home: Option<PathBuf>,
 
+    /// Print `status`, `devices` and `requests` as JSON, for scripts.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -194,6 +198,10 @@ async fn run(cli: Cli) -> Result<()> {
 
         Command::Status => {
             let (id, name, port, version) = connect().await?.status().await?;
+            if cli.json {
+                print_json(serde_json::json!({ "id": id, "name": name, "port": port, "version": version }))?;
+                return Ok(());
+            }
             println!("name     {name}");
             println!("id       {id}");
             println!("port     {port}/udp");
@@ -208,6 +216,9 @@ async fn run(cli: Cli) -> Result<()> {
 
         Command::Devices => {
             let devices = connect().await?.devices().await?;
+            if cli.json {
+                return print_json(serde_json::to_value(&devices)?);
+            }
             if devices.is_empty() {
                 println!("No devices yet. Devices on your network appear here; pair one with `crossdrop pair <name>`.");
             }
@@ -256,6 +267,9 @@ async fn run(cli: Cli) -> Result<()> {
             let mut client = connect().await?;
             let pairs = client.pair_requests().await?;
             let offers = client.offers().await?;
+            if cli.json {
+                return print_json(serde_json::json!({ "pairing": pairs, "transfers": offers }));
+            }
             if pairs.is_empty() && offers.is_empty() {
                 println!("Nothing waiting.");
             }
@@ -450,6 +464,12 @@ async fn run(cli: Cli) -> Result<()> {
             println!("Forgot {device}.");
         }
     }
+    Ok(())
+}
+
+/// One JSON document on standard output.
+fn print_json(value: serde_json::Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 
