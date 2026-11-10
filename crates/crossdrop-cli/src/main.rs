@@ -10,6 +10,37 @@ use crossdrop_proto::ipc::{OfferInfo, PairRequestInfo};
 use crossdrop_sdk::files::{send_files, Declined, SendEvent};
 use crossdrop_sdk::{Client, Paths};
 
+/// `print!` / `println!` that end the command quietly when standard output
+/// is closed early (`crossdrop devices | head -1`), instead of panicking with
+/// "failed printing to stdout: Broken pipe". (Restoring the default SIGPIPE
+/// would do it too, but would also kill `crossdrop daemon` whenever a client
+/// hangs up on its socket.)
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if let Err(e) = write!(std::io::stdout(), $($arg)*) {
+            exit_on_closed_stdout(e);
+        }
+    }};
+}
+
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if let Err(e) = writeln!(std::io::stdout(), $($arg)*) {
+            exit_on_closed_stdout(e);
+        }
+    }};
+}
+
+fn exit_on_closed_stdout(e: std::io::Error) {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        std::process::exit(0);
+    }
+    eprintln!("error: cannot write to standard output: {e}");
+    std::process::exit(1);
+}
+
 #[derive(Parser)]
 #[command(name = "crossdrop", version, about = "Share files and more between your devices, end-to-end encrypted.")]
 struct Cli {
@@ -202,10 +233,10 @@ async fn run(cli: Cli) -> Result<()> {
                 print_json(serde_json::json!({ "id": id, "name": name, "port": port, "version": version }))?;
                 return Ok(());
             }
-            println!("name     {name}");
-            println!("id       {id}");
-            println!("port     {port}/udp");
-            println!("version  {version}");
+            outln!("name     {name}");
+            outln!("id       {id}");
+            outln!("port     {port}/udp");
+            outln!("version  {version}");
             if version != env!("CARGO_PKG_VERSION") {
                 eprintln!(
                     "warning: the daemon runs {version} but this command is {}; restart the daemon to use the same version",
@@ -220,7 +251,7 @@ async fn run(cli: Cli) -> Result<()> {
                 return print_json(serde_json::to_value(&devices)?);
             }
             if devices.is_empty() {
-                println!("No devices yet. Devices on your network appear here; pair one with `crossdrop pair <name>`.");
+                outln!("No devices yet. Devices on your network appear here; pair one with `crossdrop pair <name>`.");
             }
             for d in devices {
                 let state = match (d.paired, d.online) {
@@ -228,12 +259,12 @@ async fn run(cli: Cli) -> Result<()> {
                     (true, false) => "paired",
                     (false, _) => "nearby",
                 };
-                println!("{:<20} {}  {:<15} {}", d.name, short(&d.id), state, d.addrs.join(", "));
+                outln!("{:<20} {}  {:<15} {}", d.name, short(&d.id), state, d.addrs.join(", "));
                 if d.paired {
                     let auto = if d.auto_accept { "  (files accepted automatically)" } else { "" };
-                    println!("{:<20} allowed: {}{auto}", "", d.permissions.join(", "));
+                    outln!("{:<20} allowed: {}{auto}", "", d.permissions.join(", "));
                     if d.clipboard_send {
-                        println!("{:<20} gets this device's clipboard copies", "");
+                        outln!("{:<20} gets this device's clipboard copies", "");
                     }
                 }
             }
@@ -242,19 +273,19 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Pair { target, yes } => {
             let mut client = connect().await?;
             let (pair_id, code, peer_id, peer_name) = client.pair_start(&target).await?;
-            println!("Pairing with {peer_name} ({})", short(&peer_id));
-            println!();
-            println!("    Code: {code}");
-            println!();
+            outln!("Pairing with {peer_name} ({})", short(&peer_id));
+            outln!();
+            outln!("    Code: {code}");
+            outln!();
             let ok = yes || confirm(&format!("Does {peer_name} show the same code?"))?;
             if !ok {
                 client.pair_confirm(&pair_id, false).await?;
                 bail!("pairing cancelled");
             }
-            println!("Waiting for the other device to accept (`crossdrop accept` there)…");
+            outln!("Waiting for the other device to accept (`crossdrop accept` there)…");
             let (paired, peer_id, peer_name) = client.pair_confirm(&pair_id, true).await?;
             if paired {
-                println!(
+                outln!(
                     "Paired with {peer_name} ({}). Send a file with `crossdrop send FILE --to {peer_name}`.",
                     short(&peer_id)
                 );
@@ -271,13 +302,13 @@ async fn run(cli: Cli) -> Result<()> {
                 return print_json(serde_json::json!({ "pairing": pairs, "transfers": offers }));
             }
             if pairs.is_empty() && offers.is_empty() {
-                println!("Nothing waiting.");
+                outln!("Nothing waiting.");
             }
             for r in pairs {
-                println!("{}  pairing   {} ({})  code {}", &r.pair_id[..8], r.peer_name, short(&r.peer_id), r.sas);
+                outln!("{}  pairing   {} ({})  code {}", &r.pair_id[..8], r.peer_name, short(&r.peer_id), r.sas);
             }
             for o in offers {
-                println!(
+                outln!(
                     "{}  files     {} wants to send {} file(s), {}: {}{}",
                     &o.offer_id[..8],
                     o.peer_name,
@@ -297,11 +328,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             for offer in offers {
                 client.offer_answer(&offer.offer_id, true).await?;
-                println!("Receiving {} file(s) from {}.", offer.files, offer.peer_name);
+                outln!("Receiving {} file(s) from {}.", offer.files, offer.peer_name);
             }
             let pairs = client.pair_requests().await?.len();
             if pairs > 0 {
-                println!("{pairs} pairing request(s) still waiting: accept each one after checking its code.");
+                outln!("{pairs} pairing request(s) still waiting: accept each one after checking its code.");
             }
         }
 
@@ -313,46 +344,46 @@ async fn run(cli: Cli) -> Result<()> {
             }
             for request in pairs {
                 client.pair_answer(&request.pair_id, false).await?;
-                println!("Rejected pairing with {}.", request.peer_name);
+                outln!("Rejected pairing with {}.", request.peer_name);
             }
             for offer in offers {
                 client.offer_answer(&offer.offer_id, false).await?;
-                println!("Declined the files from {}.", offer.peer_name);
+                outln!("Declined the files from {}.", offer.peer_name);
             }
         }
 
         Command::Accept { id, yes, .. } => match pick_request(&mut connect().await?, id).await? {
             Pending::Pair(request) => {
                 let mut client = connect().await?;
-                println!("{} ({}) wants to pair.", request.peer_name, short(&request.peer_id));
-                println!();
-                println!("    Code: {}", request.sas);
-                println!();
+                outln!("{} ({}) wants to pair.", request.peer_name, short(&request.peer_id));
+                outln!();
+                outln!("    Code: {}", request.sas);
+                outln!();
                 let ok = yes || confirm("Is this the code shown on the other device?")?;
                 client.pair_answer(&request.pair_id, ok).await?;
                 if ok {
-                    println!(
+                    outln!(
                         "Paired with {}. It may send you files; allow more with `crossdrop allow`.",
                         request.peer_name
                     );
                 } else {
-                    println!("Rejected.");
+                    outln!("Rejected.");
                 }
             }
             Pending::Offer(offer) => {
                 connect().await?.offer_answer(&offer.offer_id, true).await?;
-                println!("Receiving {} file(s) from {}.", offer.files, offer.peer_name);
+                outln!("Receiving {} file(s) from {}.", offer.files, offer.peer_name);
             }
         },
 
         Command::Reject { id, .. } => match pick_request(&mut connect().await?, id).await? {
             Pending::Pair(request) => {
                 connect().await?.pair_answer(&request.pair_id, false).await?;
-                println!("Rejected pairing with {}.", request.peer_name);
+                outln!("Rejected pairing with {}.", request.peer_name);
             }
             Pending::Offer(offer) => {
                 connect().await?.offer_answer(&offer.offer_id, false).await?;
-                println!("Declined the files from {}.", offer.peer_name);
+                outln!("Declined the files from {}.", offer.peer_name);
             }
         },
 
@@ -395,7 +426,7 @@ async fn run(cli: Cli) -> Result<()> {
                 Err(e) => return Err(e),
             };
             let secs = started.elapsed().as_secs_f64().max(0.001);
-            println!(
+            outln!(
                 "Sent {} file(s), {} in {secs:.1}s ({}/s).",
                 report.received,
                 human(report.bytes_sent),
@@ -416,52 +447,54 @@ async fn run(cli: Cli) -> Result<()> {
                 bail!("nothing to send");
             }
             let n = connect().await?.clipboard_send(&text, to.as_deref()).await?;
-            println!("Shared with {n} device(s).");
+            outln!("Shared with {n} device(s).");
         }
 
         Command::Clip(Clip::Get) => match connect().await?.clipboard_get().await? {
-            Some((text, _from)) => print!("{text}"),
+            Some((text, _from)) => out!("{text}"),
             None => bail!("nothing received yet"),
         },
 
         Command::Clip(Clip::Share { device, off }) => {
             connect().await?.set_clipboard_send(&device, !off).await?;
             if off {
-                println!("Copies made here are no longer sent to {device}.");
+                outln!("Copies made here are no longer sent to {device}.");
             } else {
-                println!("Copies made here are now sent to {device}.");
+                outln!("Copies made here are now sent to {device}.");
             }
         }
 
         Command::AutoAccept { device, off } => {
             connect().await?.set_auto_accept(&device, !off).await?;
             if off {
-                println!("Files from {device} will wait for `crossdrop accept`.");
+                outln!("Files from {device} will wait for `crossdrop accept`.");
             } else {
-                println!("Files from {device} are now accepted automatically.");
+                outln!("Files from {device} are now accepted automatically.");
             }
         }
 
         Command::Allow { device, service } => {
             let service = service_name(&service);
             connect().await?.set_permission(&device, &service, true).await?;
-            println!("{device} may now use {service}.");
+            outln!("{device} may now use {service}.");
         }
 
         Command::Deny { device, service } => {
             let service = service_name(&service);
             connect().await?.set_permission(&device, &service, false).await?;
-            println!("{device} may no longer use {service}.");
+            outln!("{device} may no longer use {service}.");
         }
 
         Command::Completions { shell } => {
             use clap::CommandFactory;
-            clap_complete::generate(shell, &mut Cli::command(), "crossdrop", &mut std::io::stdout());
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "crossdrop", &mut script);
+            out!("{}", String::from_utf8_lossy(&script));
         }
 
         Command::Unpair { device } => {
             connect().await?.unpair(&device).await?;
-            println!("Forgot {device}.");
+            outln!("Forgot {device}.");
         }
     }
     Ok(())
@@ -469,7 +502,7 @@ async fn run(cli: Cli) -> Result<()> {
 
 /// One JSON document on standard output.
 fn print_json(value: serde_json::Value) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    outln!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 
