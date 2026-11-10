@@ -63,6 +63,11 @@ jobs:
             os: ubuntu-22.04
             archive: tar.gz
             tauri_args: ""
+          # Raspberry Pi, ARM servers and laptops.
+          - name: Linux (ARM64)
+            os: ubuntu-22.04-arm
+            archive: tar.gz
+            tauri_args: ""
           # One universal build for Apple silicon and Intel Macs.
           - name: macOS (universal)
             os: macos-latest

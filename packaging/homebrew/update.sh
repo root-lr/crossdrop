@@ -6,6 +6,7 @@
 # The asset folder must hold the release's
 #   crossdrop-cli-<tag>-universal-apple-darwin.tar.gz
 #   crossdrop-cli-<tag>-x86_64-unknown-linux-gnu.tar.gz
+#   crossdrop-cli-<tag>-aarch64-unknown-linux-gnu.tar.gz
 #   crossdrop_<version>_universal.dmg
 set -euo pipefail
 
@@ -23,12 +24,14 @@ sha() {
 
 sha_mac=$(sha "crossdrop-cli-$tag-universal-apple-darwin.tar.gz")
 sha_linux=$(sha "crossdrop-cli-$tag-x86_64-unknown-linux-gnu.tar.gz")
+sha_linux_arm=$(sha "crossdrop-cli-$tag-aarch64-unknown-linux-gnu.tar.gz")
 sha_dmg=$(sha "crossdrop_${version}_universal.dmg")
 
 render() {
   sed -e "s/@VERSION@/$version/g" \
       -e "s/@SHA_MAC@/$sha_mac/g" \
       -e "s/@SHA_LINUX@/$sha_linux/g" \
+      -e "s/@SHA_LINUX_ARM@/$sha_linux_arm/g" \
       -e "s/@SHA_DMG@/$sha_dmg/g" "$1"
 }
 
