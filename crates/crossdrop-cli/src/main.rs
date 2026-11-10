@@ -95,6 +95,14 @@ enum Clip {
     },
     /// Print the last text another device shared.
     Get,
+    /// Send this device's copies to a device (`--off` to stop), whether or
+    /// not it may write to this clipboard. By default copies go to the
+    /// devices allowed `clipboard`.
+    Share {
+        device: String,
+        #[arg(long)]
+        off: bool,
+    },
 }
 
 fn service_name(s: &str) -> String {
@@ -191,6 +199,9 @@ async fn run(cli: Cli) -> Result<()> {
                 if d.paired {
                     let auto = if d.auto_accept { "  (files accepted automatically)" } else { "" };
                     println!("{:<20} allowed: {}{auto}", "", d.permissions.join(", "));
+                    if d.clipboard_send {
+                        println!("{:<20} gets this device's clipboard copies", "");
+                    }
                 }
             }
         }
@@ -335,6 +346,15 @@ async fn run(cli: Cli) -> Result<()> {
             Some((text, _from)) => print!("{text}"),
             None => bail!("nothing received yet"),
         },
+
+        Command::Clip(Clip::Share { device, off }) => {
+            connect().await?.set_clipboard_send(&device, !off).await?;
+            if off {
+                println!("Copies made here are no longer sent to {device}.");
+            } else {
+                println!("Copies made here are now sent to {device}.");
+            }
+        }
 
         Command::AutoAccept { device, off } => {
             connect().await?.set_auto_accept(&device, !off).await?;

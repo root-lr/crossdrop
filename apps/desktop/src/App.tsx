@@ -357,7 +357,13 @@ function DeviceRow({
             Receive its files without asking
           </Toggle>
           <Toggle checked={allows(SERVICES.clipboard)} onChange={() => toggle(SERVICES.clipboard)}>
-            Share the clipboard with it
+            Its copies reach my clipboard
+          </Toggle>
+          <Toggle
+            checked={d.clipboard_send}
+            onChange={() => act(() => api.setClipboardSend(d.id, !d.clipboard_send))}
+          >
+            My copies reach its clipboard
           </Toggle>
           <Toggle checked={allows(SERVICES.input)} onChange={() => toggle(SERVICES.input)}>
             May control this computer's mouse and keyboard

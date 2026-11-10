@@ -170,6 +170,12 @@ impl Client {
         Ok(())
     }
 
+    /// Sends (or stops sending) this device's clipboard copies to `device`.
+    pub async fn set_clipboard_send(&mut self, device: &str, enabled: bool) -> Result<()> {
+        self.request(&Request::SetClipboardSend { device: device.into(), enabled }).await?;
+        Ok(())
+    }
+
     /// Sends text to one device, or to all clipboard peers. Returns how many received it.
     pub async fn clipboard_send(&mut self, text: &str, device: Option<&str>) -> Result<u32> {
         let req = Request::ClipboardSend { text: text.into(), device: device.map(Into::into) };

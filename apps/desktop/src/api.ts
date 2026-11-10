@@ -10,6 +10,7 @@ export interface Device {
   online: boolean;
   permissions: string[];
   auto_accept: boolean;
+  clipboard_send: boolean;
 }
 
 export interface PairRequest {
@@ -71,6 +72,7 @@ export const api = {
   setPermission: (device: string, service: string, allow: boolean) =>
     invoke<void>("set_permission", { device, service, allow }),
   setAutoAccept: (device: string, enabled: boolean) => invoke<void>("set_auto_accept", { device, enabled }),
+  setClipboardSend: (device: string, enabled: boolean) => invoke<void>("set_clipboard_send", { device, enabled }),
   unpair: (device: string) => invoke<void>("unpair", { device }),
   sendFiles: (device: string, paths: string[], desktop = false) =>
     invoke<number>("send_files", { device, paths, desktop }),

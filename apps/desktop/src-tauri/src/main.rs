@@ -138,6 +138,11 @@ async fn set_auto_accept(app: State<'_, App>, device: String, enabled: bool) -> 
 }
 
 #[tauri::command]
+async fn set_clipboard_send(app: State<'_, App>, device: String, enabled: bool) -> Res<()> {
+    client(&app).await?.set_clipboard_send(&device, enabled).await.map_err(err)
+}
+
+#[tauri::command]
 async fn unpair(handle: AppHandle, app: State<'_, App>, device: String) -> Res<()> {
     client(&app).await?.unpair(&device).await.map_err(err)?;
     // A forgotten device leaves the desk too.
@@ -453,6 +458,7 @@ fn main() {
             offer_answer,
             set_permission,
             set_auto_accept,
+            set_clipboard_send,
             unpair,
             send_files,
             layout_set,

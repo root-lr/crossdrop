@@ -433,7 +433,7 @@ impl Daemon {
             .unwrap()
             .devices
             .iter()
-            .filter(|(_, d)| d.allows(services::CLIPBOARD))
+            .filter(|(_, d)| d.sends_clipboard())
             .filter_map(|(id, _)| id.parse().ok())
             .collect()
     }
@@ -745,6 +745,14 @@ impl Daemon {
                 trust.save()?;
                 Ok(Response::Ok)
             }
+            Request::SetClipboardSend { device, enabled } => {
+                let id = self.resolve_device(&device)?;
+                let mut trust = self.trust.lock().unwrap();
+                let entry = trust.devices.get_mut(&id.to_string()).ok_or_else(|| anyhow!("{device} is not paired"))?;
+                entry.clipboard_send = Some(enabled);
+                trust.save()?;
+                Ok(Response::Ok)
+            }
             Request::ClipboardSend { text, device } => match device {
                 Some(device) => {
                     let id = self.resolve_device(&device)?;
@@ -756,7 +764,7 @@ impl Daemon {
                 }
                 None => {
                     if self.clipboard_peers().is_empty() {
-                        bail!("no device shares the clipboard with this one; run `crossdrop allow <device> clipboard`");
+                        bail!("this device sends its clipboard to no device; run `crossdrop allow <device> clipboard`");
                     }
                     Ok(Response::Sent { count: self.broadcast_clipboard(text).await })
                 }
@@ -788,6 +796,7 @@ impl Daemon {
                     online: false,
                     permissions: d.permissions.clone(),
                     auto_accept: d.auto_accept,
+                    clipboard_send: d.sends_clipboard(),
                 },
             );
         }
@@ -800,6 +809,7 @@ impl Daemon {
                 online: false,
                 permissions: vec![],
                 auto_accept: false,
+                clipboard_send: false,
             });
             for a in &d.addrs {
                 let a = a.to_string();
