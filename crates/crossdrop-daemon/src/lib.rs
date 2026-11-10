@@ -14,7 +14,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use crossdrop_core::{DeviceId, Discovery, Identity, Node};
+use crossdrop_core::{DeviceId, Discovery, DiscoveryEvent, Identity, Node};
 use crossdrop_sdk::Paths;
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -103,8 +103,11 @@ pub async fn start(opts: Options) -> Result<Handle> {
             Ok((discovery, mut found)) => {
                 let d = daemon.clone();
                 tasks.push(tokio::spawn(async move {
-                    while let Some(device) = found.recv().await {
-                        d.on_discovered(device);
+                    while let Some(event) = found.recv().await {
+                        match event {
+                            DiscoveryEvent::Found(device) => d.on_discovered(device),
+                            DiscoveryEvent::Lost(id) => d.on_lost(id),
+                        }
                     }
                 }));
                 Some(discovery)

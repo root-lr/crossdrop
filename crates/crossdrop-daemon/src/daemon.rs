@@ -115,6 +115,14 @@ impl Daemon {
         self.discovered.lock().unwrap().insert(d.id, d);
     }
 
+    /// The device stopped announcing itself: it is no longer nearby. A live
+    /// connection still counts as online in [`Self::list_devices`].
+    pub fn on_lost(&self, id: DeviceId) {
+        if self.discovered.lock().unwrap().remove(&id).is_some() {
+            debug!(peer = %id.short(), "gone from the network");
+        }
+    }
+
     /// Accept loop for incoming QUIC connections.
     pub async fn accept_loop(self: Arc<Self>) {
         while let Some(incoming) = self.node.accept().await {
@@ -134,6 +142,8 @@ impl Daemon {
     /// Remembers `conn` and dispatches the channels the peer opens on it.
     async fn serve_connection(self: Arc<Self>, peer: DeviceId, conn: Connection) {
         debug!(peer = %peer.short(), addr = %conn.remote_address(), "connected");
+        // Incoming or outgoing, the peer's endpoint is the one it listens on.
+        self.remember_addr(peer, conn.remote_address());
         self.conns.lock().unwrap().insert(peer, conn.clone());
         while let Ok(pending) = PendingChannel::next(&conn).await {
             let this = self.clone();
@@ -252,21 +262,28 @@ impl Daemon {
 
     /// Dials `peer` at its known addresses.
     async fn dial_peer(self: &Arc<Self>, peer: DeviceId) -> Result<Connection> {
-        let mut addrs: Vec<SocketAddr> = Vec::new();
-        if let Some(d) = self.discovered.lock().unwrap().get(&peer) {
-            addrs.extend(&d.addrs);
-        }
-        if let Some(t) = self.trusted(peer) {
-            addrs.extend(t.addrs.iter().filter_map(|a| a.parse::<SocketAddr>().ok()));
-        }
-        addrs.dedup();
+        let addrs = self.known_addrs(peer);
         if addrs.is_empty() {
             bail!("no known address for {}; is it on this network?", peer.short());
         }
-        let mut last_err = None;
+        // All addresses at once: a stale one must not delay a good one by
+        // the whole dial timeout.
+        let mut attempts = tokio::task::JoinSet::new();
         for addr in addrs {
-            match self.dial(addr).await {
-                Ok((conn, id)) if id == peer => return Ok(conn),
+            let node = self.node.clone();
+            attempts.spawn(async move { (addr, connect(&node, addr).await) });
+        }
+        let mut last_err = None;
+        let mut winner = None;
+        while let Some(joined) = attempts.join_next().await {
+            let Ok((addr, result)) = joined else { continue };
+            match result {
+                Ok((conn, id)) if id == peer && winner.is_none() => {
+                    winner = Some(conn);
+                    attempts.abort_all();
+                }
+                // Another address reached the same device first.
+                Ok((conn, id)) if id == peer => conn.close(0u32.into(), b"duplicate"),
                 Ok((conn, _)) => {
                     conn.close(0u32.into(), b"wrong device");
                     last_err = Some(anyhow!("{addr} is a different device"));
@@ -274,13 +291,28 @@ impl Daemon {
                 Err(e) => last_err = Some(e),
             }
         }
-        Err(last_err.unwrap_or_else(|| anyhow!("unreachable")))
+        let conn = winner.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("unreachable")))?;
+        tokio::spawn(self.clone().serve_connection(peer, conn.clone()));
+        Ok(conn)
+    }
+
+    /// Addresses to try for `peer`, each once: those announced on the network
+    /// first, then the ones remembered at pairing time.
+    fn known_addrs(&self, peer: DeviceId) -> Vec<SocketAddr> {
+        let mut addrs: Vec<SocketAddr> = Vec::new();
+        if let Some(d) = self.discovered.lock().unwrap().get(&peer) {
+            addrs.extend(&d.addrs);
+        }
+        if let Some(t) = self.trusted(peer) {
+            addrs.extend(t.addrs.iter().filter_map(|a| a.parse::<SocketAddr>().ok()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        addrs.retain(|a| seen.insert(*a));
+        addrs
     }
 
     async fn dial(self: &Arc<Self>, addr: SocketAddr) -> Result<(Connection, DeviceId)> {
-        let (conn, peer) = tokio::time::timeout(DIAL_TIMEOUT, self.node.connect(addr))
-            .await
-            .map_err(|_| anyhow!("{addr} did not answer"))??;
+        let (conn, peer) = connect(&self.node, addr).await?;
         tokio::spawn(self.clone().serve_connection(peer, conn.clone()));
         Ok((conn, peer))
     }
@@ -496,12 +528,20 @@ impl Daemon {
         let mut trust = self.trust.lock().unwrap();
         let entry = trust.devices.entry(peer.to_string()).or_insert_with(|| TrustedDevice::new(name.clone(), None));
         entry.name = name;
-        let addr = addr.to_string();
-        if !entry.addrs.contains(&addr) {
-            entry.addrs.insert(0, addr);
-            entry.addrs.truncate(4);
-        }
+        entry.remember_addr(addr.to_string());
         trust.save()
+    }
+
+    /// Records where a paired device was just reached, so that it can be
+    /// dialed again without mDNS after its address changed (DHCP).
+    fn remember_addr(&self, peer: DeviceId, addr: SocketAddr) {
+        let mut trust = self.trust.lock().unwrap();
+        let Some(entry) = trust.devices.get_mut(&peer.to_string()) else { return };
+        if entry.remember_addr(addr.to_string()) {
+            if let Err(e) = trust.save() {
+                warn!("cannot save {}: {e:#}", peer.short());
+            }
+        }
     }
 
     // ---------------------------------------------------------------- IPC
@@ -690,5 +730,84 @@ impl Daemon {
         let mut list: Vec<DeviceInfo> = out.into_values().collect();
         list.sort_by(|a, b| b.paired.cmp(&a.paired).then(a.name.cmp(&b.name)));
         list
+    }
+}
+
+/// Connects to `addr`, giving up after [`DIAL_TIMEOUT`].
+async fn connect(node: &Node, addr: SocketAddr) -> Result<(Connection, DeviceId)> {
+    tokio::time::timeout(DIAL_TIMEOUT, node.connect(addr)).await.map_err(|_| anyhow!("{addr} did not answer"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossdrop_core::Identity;
+
+    #[tokio::test]
+    async fn a_device_that_leaves_is_no_longer_listed_online() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+
+        let peer = Identity::generate().unwrap().id();
+        let addrs = vec!["10.0.0.2:47470".parse().unwrap()];
+        daemon.on_discovered(Discovered { id: peer, name: "bravo".into(), addrs });
+        let listed = daemon.list_devices();
+        assert_eq!((listed.len(), listed[0].online), (1, true));
+
+        daemon.on_lost(peer);
+        assert!(daemon.list_devices().is_empty());
+    }
+
+    #[tokio::test]
+    async fn each_address_is_tried_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let peer = Identity::generate().unwrap().id();
+        let mut device = TrustedDevice::new("bravo".into(), Some("10.0.0.2:47470".into()));
+        device.addrs.push("10.0.0.3:47470".into());
+        trust.devices.insert(peer.to_string(), device);
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+
+        // Announced: .3 then .2. Remembered: .2 then .3. Not adjacent duplicates.
+        let addrs = vec!["10.0.0.3:47470".parse().unwrap(), "10.0.0.2:47470".parse().unwrap()];
+        daemon.on_discovered(Discovered { id: peer, name: "bravo".into(), addrs });
+        let got: Vec<String> = daemon.known_addrs(peer).iter().map(|a| a.to_string()).collect();
+        assert_eq!(got, ["10.0.0.3:47470", "10.0.0.2:47470"]);
+    }
+
+    #[tokio::test]
+    async fn a_dead_address_does_not_delay_a_live_one() {
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let alive = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let alive_addr = alive.local_addr().unwrap();
+        let peer = alive.id();
+        tokio::spawn(async move {
+            while let Some(incoming) = alive.accept().await {
+                tokio::spawn(async move {
+                    if let Ok(conn) = incoming.await {
+                        conn.closed().await;
+                    }
+                });
+            }
+        });
+        // Bound but silent: QUIC packets to it are never answered.
+        let silent = std::net::UdpSocket::bind(local).unwrap();
+        let dead_addr = silent.local_addr().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let mut device = TrustedDevice::new("bravo".into(), Some(alive_addr.to_string()));
+        device.addrs.insert(0, dead_addr.to_string());
+        trust.devices.insert(peer.to_string(), device);
+        let node = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+
+        let started = std::time::Instant::now();
+        let conn = daemon.dial_peer(peer).await.unwrap();
+        assert_eq!(conn.remote_address(), alive_addr);
+        assert!(started.elapsed() < DIAL_TIMEOUT / 2, "took {:?}", started.elapsed());
     }
 }

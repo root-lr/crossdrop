@@ -55,15 +55,42 @@ impl Config {
     }
 }
 
+/// Default device name: the name the user gave this computer.
+///
+/// macOS has neither `HOSTNAME` in the environment of GUI apps and services
+/// nor `/etc/hostname`, so it asks the system for the "Computer Name" first,
+/// then falls back to the network host name.
 fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
+    computer_name()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .or_else(|| gethostname::gethostname().into_string().ok())
+        .and_then(|s| clean_name(&s))
         .unwrap_or_else(|| "crossdrop".to_string())
 }
+
+/// The user-visible computer name (System Settings → General → Sharing).
+#[cfg(target_os = "macos")]
+fn computer_name() -> Option<String> {
+    let out = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn computer_name() -> Option<String> {
+    None
+}
+
+/// Trims a host name and drops the mDNS `.local` suffix.
+fn clean_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    let name = name.strip_suffix(".local").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// How many last known addresses are kept per device.
+pub const MAX_ADDRS: usize = 4;
 
 /// A paired device and what it may do here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +114,18 @@ impl TrustedDevice {
             addrs: addr.into_iter().collect(),
             auto_accept: false,
         }
+    }
+
+    /// Puts `addr` first among the last known addresses (at most
+    /// [`MAX_ADDRS`]). Returns whether the list changed.
+    pub fn remember_addr(&mut self, addr: String) -> bool {
+        if self.addrs.first() == Some(&addr) {
+            return false;
+        }
+        self.addrs.retain(|a| *a != addr);
+        self.addrs.insert(0, addr);
+        self.addrs.truncate(MAX_ADDRS);
+        true
     }
 
     pub fn allows(&self, service: &str) -> bool {
@@ -142,6 +181,27 @@ mod tests {
         assert_eq!(again.devices, store.devices);
         assert!(again.devices["ABCD"].allows(services::FILES));
         assert!(!again.devices["ABCD"].allows("interdesk/input"));
+    }
+
+    #[test]
+    fn host_names_are_cleaned() {
+        assert_eq!(clean_name("mona-2.local\n").as_deref(), Some("mona-2"));
+        assert_eq!(clean_name("  desk  ").as_deref(), Some("desk"));
+        assert_eq!(clean_name(" \n"), None);
+        assert_eq!(clean_name(".local"), None);
+        assert!(!hostname().is_empty());
+    }
+
+    #[test]
+    fn latest_address_comes_first() {
+        let mut d = TrustedDevice::new("laptop".into(), Some("10.0.0.2:1".into()));
+        assert!(!d.remember_addr("10.0.0.2:1".into()));
+        for a in ["10.0.0.3:1", "10.0.0.4:1", "10.0.0.5:1", "10.0.0.6:1"] {
+            assert!(d.remember_addr(a.into()));
+        }
+        assert_eq!(d.addrs, ["10.0.0.6:1", "10.0.0.5:1", "10.0.0.4:1", "10.0.0.3:1"]);
+        assert!(d.remember_addr("10.0.0.4:1".into()));
+        assert_eq!(d.addrs, ["10.0.0.4:1", "10.0.0.6:1", "10.0.0.5:1", "10.0.0.3:1"]);
     }
 
     #[test]
