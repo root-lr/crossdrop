@@ -821,6 +821,7 @@ dependencies = [
  "dirs",
  "gethostname",
  "getrandom 0.4.3",
+ "libc",
  "objc2-app-kit",
  "objc2-foundation",
  "quinn",
@@ -830,6 +831,7 @@ dependencies = [
  "toml 1.2.1+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

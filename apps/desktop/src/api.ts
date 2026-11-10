@@ -34,7 +34,8 @@ export interface Overview {
   devices: Device[];
   pairs: PairRequest[];
   offers: Offer[];
-  layout: { device: string; side: Side }[];
+  /** `id` is set for devices placed since ids are kept. */
+  layout: { device: string; side: Side; id: string | null }[];
   /** interdesk.toml could not be read: why. */
   layout_error: string | null;
   sharing: boolean;

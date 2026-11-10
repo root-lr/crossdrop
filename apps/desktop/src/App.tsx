@@ -109,8 +109,10 @@ export default function App() {
 
   const paired = data.devices.filter((d) => d.paired);
   const nearby = data.devices.filter((d) => !d.paired);
-  const bySide = Object.fromEntries(data.layout.map((n) => [n.side, n.device])) as Partial<Record<Side, string>>;
-  const placed = new Set(data.layout.map((n) => n.device.toLowerCase()));
+  const bySide = Object.fromEntries(data.layout.map((n) => [n.side, n])) as Partial<
+    Record<Side, Overview["layout"][number]>
+  >;
+  const placed = new Set(data.layout.flatMap((n) => [n.device.toLowerCase(), ...(n.id ? [n.id] : [])]));
   const deviceNamed = (name: string) => data.devices.find((d) => d.name.toLowerCase() === name.toLowerCase());
   const list = Object.values(transfers).sort((a, b) => b.id - a.id);
 
@@ -164,8 +166,12 @@ export default function App() {
         <section className="desk" aria-label="Your desk">
           <div className="desk-grid">
             {SIDES.map((side) => {
-              const name = bySide[side];
-              const dev = name ? deviceNamed(name) : undefined;
+              const entry = bySide[side];
+              // By id when the layout has it: right even after a rename.
+              const dev = entry
+                ? ((entry.id ? data.devices.find((d) => d.id === entry.id) : undefined) ?? deviceNamed(entry.device))
+                : undefined;
+              const name = dev?.name ?? entry?.device;
               // Drop on the device itself when the layout name is known.
               const drop = dev?.id ?? name;
               return (
@@ -195,9 +201,9 @@ export default function App() {
                       >
                         <option value="">{paired.length ? "Choose…" : "Pair one first"}</option>
                         {paired
-                          .filter((d) => !placed.has(d.name.toLowerCase()))
+                          .filter((d) => !placed.has(d.name.toLowerCase()) && !placed.has(d.id))
                           .map((d) => (
-                            <option key={d.id} value={d.name}>
+                            <option key={d.id} value={d.id}>
                               {d.name}
                             </option>
                           ))}

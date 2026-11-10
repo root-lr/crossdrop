@@ -6,6 +6,7 @@
 //! [[neighbor]]
 //! device = "bravo"   # crossdrop device name or id prefix
 //! side = "right"     # left | right | top | bottom
+//! id = "VCZU-QFPU-…" # optional: the device id, kept by `interdesk add`
 //! ```
 
 use std::path::Path;
@@ -48,8 +49,24 @@ impl std::fmt::Display for Side {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Neighbor {
+    /// Name (or id prefix) given when the device was placed, for display.
     pub device: String,
     pub side: Side,
+    /// The device's id, when known: still right after the device is renamed,
+    /// and unambiguous when two devices share a name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+impl Neighbor {
+    /// How to ask the daemon for this device: its id when known.
+    pub fn target(&self) -> &str {
+        self.id.as_deref().unwrap_or(&self.device)
+    }
+
+    fn is(&self, device: &str) -> bool {
+        self.device.eq_ignore_ascii_case(device) || self.id.as_deref() == Some(device)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,13 +104,20 @@ impl Layout {
 
     /// Adds or moves `device`; any other device on that side is replaced.
     pub fn set(&mut self, device: &str, side: Side) {
-        self.neighbors.retain(|n| n.side != side && !n.device.eq_ignore_ascii_case(device));
-        self.neighbors.push(Neighbor { device: device.to_string(), side });
+        self.neighbors.retain(|n| n.side != side && !n.is(device));
+        self.neighbors.push(Neighbor { device: device.to_string(), side, id: None });
     }
 
+    /// Like [`Layout::set`], also remembering the device's id.
+    pub fn place(&mut self, name: &str, id: &str, side: Side) {
+        self.neighbors.retain(|n| n.side != side && !n.is(name) && !n.is(id));
+        self.neighbors.push(Neighbor { device: name.to_string(), side, id: Some(id.to_string()) });
+    }
+
+    /// Removes the device named `device`, or with that id.
     pub fn remove(&mut self, device: &str) -> bool {
         let before = self.neighbors.len();
-        self.neighbors.retain(|n| !n.device.eq_ignore_ascii_case(device));
+        self.neighbors.retain(|n| !n.is(device));
         before != self.neighbors.len()
     }
 }
@@ -213,6 +237,17 @@ mod tests {
         assert_eq!(again.neighbors.len(), 2);
         assert!(again.neighbors.iter().any(|n| n.device == "delta" && n.side == Side::Right));
         assert!(toml::from_str::<Layout>("[[neighbor]]\ndevice='a'\nside='up'").is_err());
+
+        // An id survives a rename and removes by either name or id.
+        let mut layout = Layout::default();
+        layout.place("bravo", "ABCD-EFGH", Side::Right);
+        assert_eq!(layout.neighbors[0].target(), "ABCD-EFGH");
+        layout.place("bravo-renamed", "ABCD-EFGH", Side::Left);
+        assert_eq!(layout.neighbors.len(), 1, "same device moved, not added");
+        assert!(layout.remove("ABCD-EFGH"));
+        // Files without ids still work.
+        let old: Layout = toml::from_str("[[neighbor]]\ndevice='bravo'\nside='right'").unwrap();
+        assert_eq!(old.neighbors[0].target(), "bravo");
         assert_eq!("droite".parse::<Side>().unwrap(), Side::Right);
     }
 }
