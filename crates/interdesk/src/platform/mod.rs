@@ -32,7 +32,11 @@ pub trait Platform: Send + Sync {
     /// `true`: swallow local mouse and keyboard input and report it as
     /// [`Input::Delta`], buttons, wheel and keys. `false`: leave input alone
     /// and report the cursor position as [`Input::Pos`].
-    fn set_grab(&self, grab: bool);
+    ///
+    /// Returns `false` when the input could not be captured (another
+    /// application holds it): nothing is captured then, and the cursor must
+    /// stay on this screen.
+    fn set_grab(&self, grab: bool) -> bool;
 
     /// Moves the local cursor (source side).
     fn warp(&self, x: i32, y: i32);

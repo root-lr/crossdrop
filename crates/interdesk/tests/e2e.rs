@@ -44,8 +44,9 @@ impl Platform for Fake {
     fn screen(&self) -> Rect {
         self.screen
     }
-    fn set_grab(&self, grab: bool) {
+    fn set_grab(&self, grab: bool) -> bool {
         self.push(Call::Grab(grab));
+        true
     }
     fn warp(&self, x: i32, y: i32) {
         self.push(Call::Warp(x, y));

@@ -217,13 +217,14 @@ impl Platform for Mac {
         displays_bounds()
     }
 
-    fn set_grab(&self, grab: bool) {
+    fn set_grab(&self, grab: bool) -> bool {
         GRABBED.store(grab, Ordering::Relaxed);
         if CGDisplay::associate_mouse_and_mouse_cursor_position(!grab).is_err() {
             warn!("cannot detach the cursor from the mouse");
         }
         let display = CGDisplay::main();
         let _ = if grab { display.hide_cursor() } else { display.show_cursor() };
+        true
     }
 
     fn warp(&self, x: i32, y: i32) {

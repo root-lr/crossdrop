@@ -184,7 +184,7 @@ impl Platform for Win {
         virtual_screen()
     }
 
-    fn set_grab(&self, grab: bool) {
+    fn set_grab(&self, grab: bool) -> bool {
         if grab {
             let (cx, cy) = virtual_screen().center();
             CENTER_X.store(cx, Ordering::Relaxed);
@@ -194,6 +194,7 @@ impl Platform for Win {
         } else {
             GRABBED.store(false, Ordering::Relaxed);
         }
+        true
     }
 
     fn warp(&self, x: i32, y: i32) {
