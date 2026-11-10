@@ -104,6 +104,10 @@ pub struct TrustedDevice {
     /// Store files from this device without asking.
     #[serde(default)]
     pub auto_accept: bool,
+    /// Send this device our clipboard copies. Unset: we do when it may write
+    /// to our clipboard (`crossdrop/clipboard`), as before this setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard_send: Option<bool>,
 }
 
 impl TrustedDevice {
@@ -113,7 +117,13 @@ impl TrustedDevice {
             permissions: vec![services::FILES.to_string()],
             addrs: addr.into_iter().collect(),
             auto_accept: false,
+            clipboard_send: None,
         }
+    }
+
+    /// Whether this device gets our clipboard copies.
+    pub fn sends_clipboard(&self) -> bool {
+        self.clipboard_send.unwrap_or_else(|| self.allows(services::CLIPBOARD))
     }
 
     /// Puts `addr` first among the last known addresses (at most
@@ -200,6 +210,22 @@ mod tests {
         assert_eq!(d.addrs, ["10.0.0.6:1", "10.0.0.5:1", "10.0.0.4:1", "10.0.0.3:1"]);
         assert!(d.remember_addr("10.0.0.4:1".into()));
         assert_eq!(d.addrs, ["10.0.0.4:1", "10.0.0.6:1", "10.0.0.5:1", "10.0.0.3:1"]);
+    }
+
+    #[test]
+    fn clipboard_sending_follows_the_permission_until_set() {
+        let mut d = TrustedDevice::new("laptop".into(), None);
+        assert!(!d.sends_clipboard());
+        d.permissions.push(services::CLIPBOARD.into());
+        assert!(d.sends_clipboard(), "default: same as the permission");
+        d.clipboard_send = Some(false);
+        assert!(!d.sends_clipboard(), "receive only");
+        d.permissions.clear();
+        d.clipboard_send = Some(true);
+        assert!(d.sends_clipboard(), "send only");
+        // Unset stays out of trusted.toml.
+        d.clipboard_send = None;
+        assert!(!toml::to_string(&d).unwrap().contains("clipboard_send"));
     }
 
     #[test]

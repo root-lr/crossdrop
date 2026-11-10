@@ -34,6 +34,9 @@ enum Command {
         /// Do not announce or discover devices with mDNS.
         #[arg(long)]
         no_mdns: bool,
+        /// Do not watch or set the system clipboard (`crossdrop clip` still works).
+        #[arg(long)]
+        no_clipboard: bool,
         /// Where received files are stored.
         #[arg(long, value_name = "DIR")]
         download_dir: Option<PathBuf>,
@@ -95,6 +98,14 @@ enum Clip {
     },
     /// Print the last text another device shared.
     Get,
+    /// Send this device's copies to a device (`--off` to stop), whether or
+    /// not it may write to this clipboard. By default copies go to the
+    /// devices allowed `clipboard`.
+    Share {
+        device: String,
+        #[arg(long)]
+        off: bool,
+    },
 }
 
 fn service_name(s: &str) -> String {
@@ -146,7 +157,7 @@ async fn run(cli: Cli) -> Result<()> {
     let connect = || Client::connect(paths.clone());
 
     match cli.command {
-        Command::Daemon { name, port, no_mdns, download_dir } => {
+        Command::Daemon { name, port, no_mdns, no_clipboard, download_dir } => {
             let filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
             tracing_subscriber::fmt().with_env_filter(filter).init();
@@ -156,7 +167,7 @@ async fn run(cli: Cli) -> Result<()> {
                 port,
                 mdns: no_mdns.then_some(false),
                 download_dir,
-                clipboard_sync: None,
+                clipboard_sync: no_clipboard.then_some(false),
                 desktop_dir: None,
             })
             .await?;
@@ -191,6 +202,9 @@ async fn run(cli: Cli) -> Result<()> {
                 if d.paired {
                     let auto = if d.auto_accept { "  (files accepted automatically)" } else { "" };
                     println!("{:<20} allowed: {}{auto}", "", d.permissions.join(", "));
+                    if d.clipboard_send {
+                        println!("{:<20} gets this device's clipboard copies", "");
+                    }
                 }
             }
         }
@@ -335,6 +349,15 @@ async fn run(cli: Cli) -> Result<()> {
             Some((text, _from)) => print!("{text}"),
             None => bail!("nothing received yet"),
         },
+
+        Command::Clip(Clip::Share { device, off }) => {
+            connect().await?.set_clipboard_send(&device, !off).await?;
+            if off {
+                println!("Copies made here are no longer sent to {device}.");
+            } else {
+                println!("Copies made here are now sent to {device}.");
+            }
+        }
 
         Command::AutoAccept { device, off } => {
             connect().await?.set_auto_accept(&device, !off).await?;

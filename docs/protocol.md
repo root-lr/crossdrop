@@ -125,14 +125,24 @@ Any paired device may open this service, whatever its permissions.
 ## Clipboard (`crossdrop/clipboard`)
 
 One channel per update: the sender writes `{"text":"…"}`, the receiver
-applies it and answers `{"type":"accepted"}`.
+applies it and answers `{"type":"accepted"}`. Texts over 1 MiB are not shared
+(send them as a file).
 
-Sharing is opt-in per device and symmetric in intent: `crossdrop allow X
+Sharing is opt-in per device and symmetric by default: `crossdrop allow X
 clipboard` lets X write to this device's clipboard **and** makes this device
-send its own copies to X. Each daemon polls the system clipboard every
+send its own copies to X. `crossdrop clip share X --off` keeps this device's
+copies from X (receive only); `crossdrop clip share X` sends them even if X
+may not write here (send only). The choice is stored as `clipboard_send` in
+`trusted.toml` only once made. Each daemon polls the system clipboard every
 500 ms; text received from a peer is remembered so it is not sent back.
 Headless devices without a system clipboard still accept and expose the last
 text through `crossdrop clip get`.
+
+Copies that their app marks as sensitive are never sent: on macOS the
+`org.nspasteboard.ConcealedType` / `TransientType` pasteboard types (set by
+1Password, Bitwarden, KeePassXC…), on Windows the
+`ExcludeClipboardContentFromMonitorProcessing` and `Clipboard Viewer Ignore`
+formats. Not detected yet on Linux.
 
 ## Reserved service names
 

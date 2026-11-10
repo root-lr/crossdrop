@@ -112,7 +112,9 @@ crossdrop allow bravo clipboard     # on alpha
 crossdrop allow alpha clipboard     # on bravo
 ```
 
-Copy on one, paste on the other. From a script or a server:
+Copy on one, paste on the other. To share one way only, run
+`crossdrop clip share bravo --off` on the device that keeps its copies to
+itself. From a script or a server:
 `echo "text" | crossdrop clip send --to bravo`, `crossdrop clip get`.
 
 | Command | What it does |
@@ -124,6 +126,7 @@ Copy on one, paste on the other. From a script or a server:
 | `crossdrop send <files or folders…> --to <device>` | Send, or resume sending |
 | `crossdrop auto-accept <device> [--off]` | Trust a device's files without asking |
 | `crossdrop clip send [text] [--to device]` / `clip get` | Share text with clipboards |
+| `crossdrop clip share <device> [--off]` | Send this device's copies to a device, or stop |
 | `crossdrop allow <device> <service>` / `deny` | Manage permissions (`files`, `clipboard`, `input`, or a full name) |
 | `crossdrop unpair <device>` | Forget a device |
 

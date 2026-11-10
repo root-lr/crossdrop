@@ -32,3 +32,12 @@ tokio = { version = "1.54.1", features = ["full", "test-util"] }
 [[bin]]
 name = "crossdropd"
 path = "src/main.rs"
+
+# Detecting clipboard contents that password managers mark as sensitive.
+# Already built for arboard; listed here to call them directly.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSEnumerator"] }
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = { version = "5.4.3", features = ["std"] }

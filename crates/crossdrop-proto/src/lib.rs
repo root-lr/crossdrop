@@ -274,7 +274,13 @@ pub mod ipc {
             device: String,
             enabled: bool,
         },
-        /// Send text to one device, or to every device allowed `crossdrop/clipboard`.
+        /// Send (or stop sending) this device's clipboard copies to a device.
+        /// By default they go to the devices allowed `crossdrop/clipboard`.
+        SetClipboardSend {
+            device: String,
+            enabled: bool,
+        },
+        /// Send text to one device, or to every device this device shares its clipboard with.
         ClipboardSend {
             text: String,
             device: Option<String>,
@@ -315,6 +321,9 @@ pub mod ipc {
         pub permissions: Vec<String>,
         #[serde(default)]
         pub auto_accept: bool,
+        /// This device's clipboard copies are sent to it.
+        #[serde(default)]
+        pub clipboard_send: bool,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

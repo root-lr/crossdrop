@@ -275,3 +275,45 @@ async fn unpairing_is_mutual_and_works_offline() {
     assert!(client(&a).await.devices().await.unwrap().iter().all(|d| !d.paired));
     a.shutdown();
 }
+
+#[tokio::test]
+async fn clipboard_can_flow_one_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = daemon(dir.path(), "alpha").await;
+    let b = daemon(dir.path(), "bravo").await;
+    pair(&a, &b).await;
+
+    // bravo takes alpha's copies but keeps its own; alpha takes nothing.
+    client(&b).await.set_permission("alpha", "crossdrop/clipboard", true).await.unwrap();
+    client(&b).await.set_clipboard_send("alpha", false).await.unwrap();
+    client(&a).await.set_clipboard_send("bravo", true).await.unwrap();
+
+    assert_eq!(client(&a).await.clipboard_send("from alpha", None).await.unwrap(), 1);
+    let got = client(&b).await.clipboard_get().await.unwrap();
+    assert_eq!(got.map(|(text, _)| text).as_deref(), Some("from alpha"));
+
+    let err = client(&b).await.clipboard_send("from bravo", None).await.unwrap_err();
+    assert!(err.to_string().contains("no device"), "{err}");
+    assert!(client(&a).await.clipboard_get().await.unwrap().is_none());
+
+    let devices = client(&a).await.devices().await.unwrap();
+    assert!(devices.iter().any(|d| d.name == "bravo" && d.clipboard_send));
+    a.shutdown();
+    b.shutdown();
+}
+
+#[tokio::test]
+async fn oversized_clipboard_text_is_refused_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = daemon(dir.path(), "alpha").await;
+    let b = daemon(dir.path(), "bravo").await;
+    pair(&a, &b).await;
+    client(&b).await.set_permission("alpha", "crossdrop/clipboard", true).await.unwrap();
+
+    let big = "x".repeat(2 * 1024 * 1024);
+    let err = client(&a).await.clipboard_send(&big, Some("bravo")).await.unwrap_err();
+    assert!(err.to_string().contains("too large"), "{err}");
+    assert_eq!(client(&a).await.clipboard_send("small", Some("bravo")).await.unwrap(), 1);
+    a.shutdown();
+    b.shutdown();
+}
