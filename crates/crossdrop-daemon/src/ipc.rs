@@ -154,7 +154,7 @@ mod unix {
 }
 
 #[cfg(windows)]
-mod windows {
+pub(crate) mod windows {
     use super::*;
     use anyhow::Context;
     use crossdrop_sdk::Paths;
@@ -239,7 +239,7 @@ mod windows {
     }
 
     /// A security descriptor granting the pipe to the current user and SYSTEM.
-    mod security {
+    pub(crate) mod security {
         use std::ffi::c_void;
         use std::io;
         use std::ptr::null_mut;
@@ -341,5 +341,27 @@ mod tests {
         let home = std::env::temp_dir().join("x".repeat(120));
         let err = super::bind(&Paths { home }).err().expect("must fail");
         assert!(err.to_string().contains("too deep"), "{err}");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::windows::security::Descriptor;
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+    /// The restricted descriptor is really built (the daemon would otherwise
+    /// fall back to the default one silently), and the user who runs the
+    /// daemon can still connect to a pipe created with it.
+    #[tokio::test]
+    async fn the_pipe_is_restricted_and_still_open_to_its_user() {
+        let sd = Descriptor::current_user_only().expect("restricted descriptor");
+        let path = format!(r"\\.\pipe\crossdrop-acl-test-{}", std::process::id());
+        let mut options = ServerOptions::new();
+        options.first_pipe_instance(true).reject_remote_clients(true);
+        // SAFETY: `sd` outlives the call.
+        let server = unsafe { options.create_with_security_attributes_raw(&path, sd.attributes()) }.unwrap();
+        let client = ClientOptions::new().open(&path).expect("the owner can connect");
+        server.connect().await.unwrap();
+        drop(client);
     }
 }
