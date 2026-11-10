@@ -478,6 +478,7 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(App {
             paths,
             daemon: Mutex::new(None),
