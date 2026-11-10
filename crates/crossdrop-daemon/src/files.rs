@@ -225,9 +225,22 @@ where
     Ok(received)
 }
 
-/// Gives a received file the sender's modification time. Best effort: a
-/// file system that refuses only loses the date, not the file.
+/// Gives a received file the sender's modification time and, on Unix, its
+/// executable bit. Best effort: a file system that refuses only loses the
+/// metadata, not the file.
 fn restore_metadata(target: &Path, entry: &FileEntry) {
+    #[cfg(unix)]
+    if entry.executable {
+        use std::os::unix::fs::PermissionsExt;
+        // Executable by whoever may read it, as `chmod +x` does.
+        let set = std::fs::metadata(target).and_then(|m| {
+            let mode = m.permissions().mode();
+            std::fs::set_permissions(target, std::fs::Permissions::from_mode(mode | (mode & 0o444) >> 2))
+        });
+        if let Err(e) = set {
+            warn!(file = %target.display(), "cannot make it executable: {e}");
+        }
+    }
     if entry.mtime == 0 {
         return;
     }
@@ -386,7 +399,7 @@ mod tests {
     #[tokio::test]
     async fn an_offer_with_the_same_path_twice_is_refused() {
         let (mut a, mut b) = tokio::io::duplex(4096);
-        let entry = FileEntry { path: "photos/a.jpg".into(), size: 1, mtime: 0 };
+        let entry = FileEntry { path: "photos/a.jpg".into(), size: 1, mtime: 0, executable: false };
         let offer = Files::Offer { entries: vec![entry.clone(), entry], desktop: false };
         write_frame(&mut a, &offer).await.unwrap();
         let err = read_offer(&mut b).await.err().unwrap();
@@ -492,5 +505,24 @@ mod tests {
         transfer(&[src], &dl).await;
         let got = std::fs::metadata(dl.join("old.txt")).unwrap().modified().unwrap();
         assert_eq!(got, then);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn executables_stay_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = dir.path().join("tools");
+        std::fs::create_dir(&tools).unwrap();
+        std::fs::write(tools.join("run.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(tools.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(tools.join("notes.txt"), "plain").unwrap();
+        std::fs::set_permissions(tools.join("notes.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let dl = dir.path().join("dl");
+
+        transfer(&[tools], &dl).await;
+        let mode = |name: &str| std::fs::metadata(dl.join("tools").join(name)).unwrap().permissions().mode();
+        assert_ne!(mode("run.sh") & 0o100, 0, "run.sh lost its executable bit");
+        assert_eq!(mode("notes.txt") & 0o111, 0, "notes.txt became executable");
     }
 }

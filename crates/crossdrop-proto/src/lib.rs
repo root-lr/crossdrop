@@ -161,6 +161,14 @@ pub mod wire {
         /// resume key, so a changed file restarts from zero; given back to
         /// the received file.
         pub mtime: u64,
+        /// Unix: the file is executable (a script, a binary). Omitted when
+        /// false, so older peers see the same offers as before.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub executable: bool,
+    }
+
+    fn is_false(b: &bool) -> bool {
+        !*b
     }
 
     /// File service messages.
@@ -338,6 +346,16 @@ mod tests {
         assert_eq!(clean_device_name("\u{7}\u{200F} "), None);
         assert_eq!(clean_device_name(&"é".repeat(100)).unwrap().chars().count(), MAX_NAME_CHARS);
         assert_eq!(clean_device_name("Bureau de Léa").as_deref(), Some("Bureau de Léa"));
+    }
+
+    #[test]
+    fn file_entries_stay_compatible_with_older_peers() {
+        let plain = wire::FileEntry { path: "a.txt".into(), size: 1, mtime: 2, executable: false };
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"path":"a.txt","size":1,"mtime":2}"#);
+        let old: wire::FileEntry = serde_json::from_str(r#"{"path":"a.txt","size":1,"mtime":2}"#).unwrap();
+        assert_eq!(old, plain);
+        let exe = wire::FileEntry { executable: true, ..plain };
+        assert!(serde_json::to_string(&exe).unwrap().contains(r#""executable":true"#));
     }
 
     #[tokio::test]

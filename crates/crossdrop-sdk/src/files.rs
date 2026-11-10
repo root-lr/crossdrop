@@ -88,7 +88,18 @@ fn root_name(path: &Path) -> Result<String> {
 
 fn entry(path: String, meta: &std::fs::Metadata) -> FileEntry {
     let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-    FileEntry { path, size: meta.len(), mtime }
+    FileEntry { path, size: meta.len(), mtime, executable: is_executable(meta) }
+}
+
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// File names travel as UTF-8. A name in another encoding (old Linux

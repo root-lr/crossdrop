@@ -98,6 +98,8 @@ Any paired device may open this service, whatever its permissions.
   root (a file name or a folder name). Folders are sent recursively;
   symbolic links met inside a folder and empty folders are skipped; a link
   named on the command line is followed.
+- `mtime` is given back to the received file. `"executable": true` (omitted
+  when false) marks a Unix executable; the receiver sets its `x` bits.
 - `"desktop": true` in the offer asks for the files to land on the
   receiver's desktop. It is honoured, without asking, only when the sender
   is allowed `interdesk/input` on the receiver; otherwise the offer is
