@@ -444,6 +444,19 @@ function PairDialog({ challenge, onClose }: { challenge: Challenge; onClose: () 
     }
   };
   const name = challenge.peer_name === "unknown" ? "the other computer" : challenge.peer_name;
+  // Escape cancels while the codes are compared, and closes the dialog
+  // otherwise (an answer already sent keeps being waited for).
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (stepRef.current === "compare") confirm(false);
+      else onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   return (
     <div className="backdrop">
       <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="pair-title">
@@ -464,6 +477,10 @@ function PairDialog({ challenge, onClose }: { challenge: Challenge; onClose: () 
           <>
             <p className="code big">{challenge.code}</p>
             <p>Now accept on {name}. Waiting…</p>
+            <div className="actions">
+              <button onClick={onClose}>Hide</button>
+            </div>
+            <p className="hint">Hiding keeps the request open: it completes if {name} accepts within two minutes.</p>
           </>
         )}
         {step === "paired" && (
