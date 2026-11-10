@@ -34,6 +34,9 @@ enum Command {
         /// Do not announce or discover devices with mDNS.
         #[arg(long)]
         no_mdns: bool,
+        /// Do not watch or set the system clipboard (`crossdrop clip` still works).
+        #[arg(long)]
+        no_clipboard: bool,
         /// Where received files are stored.
         #[arg(long, value_name = "DIR")]
         download_dir: Option<PathBuf>,
@@ -154,7 +157,7 @@ async fn run(cli: Cli) -> Result<()> {
     let connect = || Client::connect(paths.clone());
 
     match cli.command {
-        Command::Daemon { name, port, no_mdns, download_dir } => {
+        Command::Daemon { name, port, no_mdns, no_clipboard, download_dir } => {
             let filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
             tracing_subscriber::fmt().with_env_filter(filter).init();
@@ -164,7 +167,7 @@ async fn run(cli: Cli) -> Result<()> {
                 port,
                 mdns: no_mdns.then_some(false),
                 download_dir,
-                clipboard_sync: None,
+                clipboard_sync: no_clipboard.then_some(false),
                 desktop_dir: None,
             })
             .await?;
