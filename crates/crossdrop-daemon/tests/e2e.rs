@@ -235,18 +235,27 @@ async fn peer_restart_does_not_hang_the_next_transfer() {
     // bravo restarts on the same port; alpha still holds the old connection.
     let port = b.port;
     b.shutdown();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let b = start(Options {
-        home: Some(dir.path().join("bravo").join("home")),
-        name: Some("bravo".into()),
-        port: Some(port),
-        mdns: Some(false),
-        download_dir: Some(dir.path().join("bravo").join("downloads")),
-        clipboard_sync: Some(false),
-        desktop_dir: None,
-    })
-    .await
-    .unwrap();
+    // In one process the old endpoint's UDP socket closes only once its last
+    // task has stopped, and Windows refuses the port until then: retry.
+    let mut tries = 0;
+    let b = loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let started = start(Options {
+            home: Some(dir.path().join("bravo").join("home")),
+            name: Some("bravo".into()),
+            port: Some(port),
+            mdns: Some(false),
+            download_dir: Some(dir.path().join("bravo").join("downloads")),
+            clipboard_sync: Some(false),
+            desktop_dir: None,
+        })
+        .await;
+        match started {
+            Ok(b) => break b,
+            Err(e) if tries < 25 && format!("{e:#}").contains("binding UDP") => tries += 1,
+            Err(e) => panic!("bravo did not restart: {e:#}"),
+        }
+    };
 
     let started = std::time::Instant::now();
     let mut s = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
