@@ -13,7 +13,7 @@ use crossdrop_core::{
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
 use crossdrop_proto::{read_frame, services, write_frame};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
@@ -22,6 +22,12 @@ use crate::config::{Config, TrustStore, TrustedDevice};
 
 /// How long a user has to compare pairing codes.
 const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long unpairing waits to tell the other device.
+const UNPAIR_NOTICE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Pairing requests waiting for the local user at once (one per device).
+const MAX_PAIR_REQUESTS: usize = 8;
+/// How long the responder waits for the initiator to acknowledge the answer.
+const PAIR_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long an opened channel waits for its client to attach.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an incoming transfer waits for the user to accept it.
@@ -170,6 +176,14 @@ impl Daemon {
         let Some(device) = self.trusted(peer) else {
             return pending.reject("not paired").await;
         };
+        if service == services::UNPAIR {
+            let mut io = pending.accept().await?.into_io();
+            self.forget(peer)?;
+            info!(peer = %device.name, id = %peer.short(), "unpaired by the other device");
+            write_frame(&mut io, &ChannelReply::Accepted).await?;
+            let _ = io.shutdown().await;
+            return Ok(());
+        }
         if !device.allows(&service) {
             info!(peer = %device.name, %service, "channel refused: no permission");
             return pending.reject(format!("permission denied for {service}")).await;
@@ -466,6 +480,16 @@ impl Daemon {
         let pair_id = self.new_token();
         let peer_name = self.device_name(peer);
         self.outgoing_pairs.lock().unwrap().insert(pair_id.clone(), OutgoingPair { conn, peer });
+        // A pairing whose user never confirms nor cancels (Ctrl+C, closed
+        // window) is dropped with its connection handle.
+        let this = self.clone();
+        let key = pair_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(PAIR_DECISION_TIMEOUT).await;
+            if this.outgoing_pairs.lock().unwrap().remove(&key).is_some() {
+                debug!(pair = %key, "pairing abandoned");
+            }
+        });
         Ok(Response::PairChallenge { pair_id, sas: code, peer_id: peer.to_string(), peer_name })
     }
 
@@ -488,6 +512,7 @@ impl Daemon {
                 .context("the other device did not answer in time")??;
         let _ = io.shutdown().await;
         let Pair::Response { accepted, name } = answer else { bail!("unexpected pairing message") };
+        let name = peer_name(&name);
         if accepted {
             self.add_trusted(pair.peer, name.clone(), pair.conn.remote_address())?;
             info!(peer = %name, id = %pair.peer.short(), "paired");
@@ -505,22 +530,73 @@ impl Daemon {
         let Pair::Request { name } = tokio::time::timeout(Duration::from_secs(30), read_frame(&mut io)).await?? else {
             bail!("unexpected pairing message");
         };
+        let name = peer_name(&name);
         let code = sas(&conn, self.id(), peer)?;
         let pair_id = self.new_token();
         let (tx, rx) = oneshot::channel();
-        self.incoming_pairs
-            .lock()
-            .unwrap()
-            .insert(pair_id.clone(), IncomingPair { peer, name: name.clone(), sas: code.clone(), decision: tx });
+        let refused = {
+            let mut pairs = self.incoming_pairs.lock().unwrap();
+            // A device asking again (its user retried) replaces its previous
+            // request, which is then answered "no".
+            pairs.retain(|_, p| p.peer != peer);
+            // Anyone on the network may ask: keep the list short and readable.
+            let refused = pairs.len() >= MAX_PAIR_REQUESTS;
+            if !refused {
+                pairs.insert(
+                    pair_id.clone(),
+                    IncomingPair { peer, name: name.clone(), sas: code.clone(), decision: tx },
+                );
+            }
+            refused
+        };
+        if refused {
+            debug!(from = %name, id = %peer.short(), "pairing request refused: too many waiting");
+            write_frame(&mut io, &Pair::Response { accepted: false, name: self.config.name.clone() }).await?;
+            let _ = io.shutdown().await;
+            return Ok(());
+        }
         info!(from = %name, id = %peer.short(), code = %code, "pairing request: run `crossdrop requests`");
         let accepted = matches!(tokio::time::timeout(PAIR_DECISION_TIMEOUT, rx).await, Ok(Ok(true)));
         self.incoming_pairs.lock().unwrap().remove(&pair_id);
-        if accepted {
-            self.add_trusted(peer, name.clone(), conn.remote_address())?;
-            info!(peer = %name, id = %peer.short(), "paired");
-        }
         write_frame(&mut io, &Pair::Response { accepted, name: self.config.name.clone() }).await?;
         let _ = io.shutdown().await;
+        if !accepted {
+            return Ok(());
+        }
+        // The initiator finishes its side once it has read the answer. Trust
+        // it only then: if it gave up or went away, neither side is paired.
+        let mut rest = [0u8; 1];
+        match tokio::time::timeout(PAIR_ACK_TIMEOUT, io.read(&mut rest)).await {
+            Ok(Ok(0)) => {
+                self.add_trusted(peer, name.clone(), conn.remote_address())?;
+                info!(peer = %name, id = %peer.short(), "paired");
+                Ok(())
+            }
+            _ => bail!("{name} went away before the pairing completed; not paired"),
+        }
+    }
+
+    /// Removes `peer` from the trust store and drops its connection.
+    fn forget(&self, peer: DeviceId) -> Result<()> {
+        {
+            let mut trust = self.trust.lock().unwrap();
+            if trust.devices.remove(&peer.to_string()).is_some() {
+                trust.save()?;
+            }
+        }
+        if let Some(conn) = self.conns.lock().unwrap().remove(&peer) {
+            conn.close(0u32.into(), b"unpaired");
+        }
+        Ok(())
+    }
+
+    /// Tells `peer` that this device forgets it.
+    async fn notify_unpair(self: &Arc<Self>, peer: DeviceId) -> Result<()> {
+        let mut io = self.channel_to(peer, services::UNPAIR).await?.into_io();
+        let reply: ChannelReply = read_frame(&mut io).await?;
+        if reply != ChannelReply::Accepted {
+            bail!("unpair notice refused");
+        }
         Ok(())
     }
 
@@ -606,18 +682,15 @@ impl Daemon {
             }
             Request::Unpair { device } => {
                 let id = self.resolve_device(&device)?;
-                let removed = {
-                    let mut trust = self.trust.lock().unwrap();
-                    let removed = trust.devices.remove(&id.to_string()).is_some();
-                    trust.save()?;
-                    removed
-                };
-                if !removed {
+                if self.trusted(id).is_none() {
                     bail!("{device} is not paired");
                 }
-                if let Some(conn) = self.conns.lock().unwrap().remove(&id) {
-                    conn.close(0u32.into(), b"unpaired");
+                // Best effort: the other device may be offline, or too old to
+                // know this service; it then keeps a stale entry, as before.
+                if let Err(e) = tokio::time::timeout(UNPAIR_NOTICE_TIMEOUT, self.notify_unpair(id)).await {
+                    debug!(peer = %id.short(), "unpair notice not delivered: {e}");
                 }
+                self.forget(id)?;
                 Ok(Response::Ok)
             }
             Request::SetPermission { device, service, allow } => {
@@ -738,6 +811,11 @@ async fn connect(node: &Node, addr: SocketAddr) -> Result<(Connection, DeviceId)
     tokio::time::timeout(DIAL_TIMEOUT, node.connect(addr)).await.map_err(|_| anyhow!("{addr} did not answer"))?
 }
 
+/// A name another device gave itself, safe to store and show.
+fn peer_name(raw: &str) -> String {
+    crossdrop_proto::clean_device_name(raw).unwrap_or_else(|| "unknown".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,5 +887,131 @@ mod tests {
         let conn = daemon.dial_peer(peer).await.unwrap();
         assert_eq!(conn.remote_address(), alive_addr);
         assert!(started.elapsed() < DIAL_TIMEOUT / 2, "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_pairing_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+
+        let other = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let addr = other.local_addr().unwrap();
+        tokio::spawn(async move {
+            let conn = other.accept().await.unwrap().await.unwrap();
+            conn.closed().await;
+        });
+
+        let Response::PairChallenge { pair_id, .. } = daemon.pair_start(&addr.to_string()).await.unwrap() else {
+            panic!("expected a challenge");
+        };
+        assert!(daemon.outgoing_pairs.lock().unwrap().contains_key(&pair_id));
+
+        // Let the expiry task start its timer, then jump past it.
+        tokio::task::yield_now().await;
+        tokio::time::pause();
+        tokio::time::advance(PAIR_DECISION_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(daemon.outgoing_pairs.lock().unwrap().is_empty());
+        assert!(daemon.pair_confirm(&pair_id, true).await.is_err());
+    }
+
+    /// A responder daemon serving connections, and a bare node to pair from.
+    fn responder() -> (Arc<Daemon>, SocketAddr, Node, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let addr = node.local_addr().unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+        tokio::spawn(daemon.clone().accept_loop());
+        let initiator = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        (daemon, addr, initiator, dir)
+    }
+
+    /// Sends a pairing request and waits until the responder lists it.
+    async fn request_pairing(daemon: &Daemon, initiator: &Node, addr: SocketAddr) -> (Connection, Channel, String) {
+        let (conn, _) = initiator.connect(addr).await.unwrap();
+        let mut channel = open_channel(&conn, services::PAIR).await.unwrap();
+        write_frame(&mut channel.send, &Pair::Request { name: "alpha".into() }).await.unwrap();
+        for _ in 0..100 {
+            if let Some(id) = daemon.incoming_pairs.lock().unwrap().keys().next().cloned() {
+                return (conn, channel, id);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the pairing request never showed up");
+    }
+
+    async fn trusts(daemon: &Daemon, peer: DeviceId) -> bool {
+        for _ in 0..50 {
+            if daemon.trusted(peer).is_some() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn accepted_pairing_is_trusted_once_the_initiator_read_the_answer() {
+        let (daemon, addr, initiator, _dir) = responder();
+        let (_conn, mut channel, pair_id) = request_pairing(&daemon, &initiator, addr).await;
+        daemon.handle_request(Request::PairAnswer { pair_id, accept: true }).await.unwrap();
+        let answer: Pair = read_frame(&mut channel.recv).await.unwrap();
+        assert!(matches!(answer, Pair::Response { accepted: true, .. }));
+        channel.send.finish().unwrap();
+        assert!(trusts(&daemon, initiator.id()).await);
+    }
+
+    #[tokio::test]
+    async fn initiator_gone_before_the_answer_is_not_trusted() {
+        let (daemon, addr, initiator, _dir) = responder();
+        let (conn, _channel, pair_id) = request_pairing(&daemon, &initiator, addr).await;
+        conn.close(0u32.into(), b"gone");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        daemon.handle_request(Request::PairAnswer { pair_id, accept: true }).await.unwrap();
+        assert!(!trusts(&daemon, initiator.id()).await);
+    }
+
+    #[tokio::test]
+    async fn a_new_request_from_the_same_device_replaces_the_old_one() {
+        let (daemon, addr, initiator, _dir) = responder();
+        let (conn, mut first, first_id) = request_pairing(&daemon, &initiator, addr).await;
+        let mut second = open_channel(&conn, services::PAIR).await.unwrap();
+        write_frame(&mut second.send, &Pair::Request { name: "alpha".into() }).await.unwrap();
+        let answer: Pair = read_frame(&mut first.recv).await.unwrap();
+        assert!(matches!(answer, Pair::Response { accepted: false, .. }));
+        let pending: Vec<String> = daemon.incoming_pairs.lock().unwrap().keys().cloned().collect();
+        assert_eq!(pending.len(), 1);
+        assert_ne!(pending[0], first_id);
+    }
+
+    #[tokio::test]
+    async fn waiting_pairing_requests_are_capped() {
+        let (daemon, addr, _, _dir) = responder();
+        let mut kept = Vec::new();
+        for _ in 0..MAX_PAIR_REQUESTS {
+            let initiator = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+            let (conn, _) = initiator.connect(addr).await.unwrap();
+            let mut channel = open_channel(&conn, services::PAIR).await.unwrap();
+            write_frame(&mut channel.send, &Pair::Request { name: "x".into() }).await.unwrap();
+            kept.push((initiator, conn, channel));
+        }
+        let extra = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let (conn, _) = extra.connect(addr).await.unwrap();
+        let mut channel = open_channel(&conn, services::PAIR).await.unwrap();
+        write_frame(&mut channel.send, &Pair::Request { name: "x".into() }).await.unwrap();
+        for _ in 0..100 {
+            if daemon.incoming_pairs.lock().unwrap().len() == MAX_PAIR_REQUESTS {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let answer: Pair = read_frame(&mut channel.recv).await.unwrap();
+        assert!(matches!(answer, Pair::Response { accepted: false, .. }));
+        assert_eq!(daemon.incoming_pairs.lock().unwrap().len(), MAX_PAIR_REQUESTS);
     }
 }

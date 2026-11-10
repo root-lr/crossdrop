@@ -64,7 +64,10 @@ impl Discovery {
                 if peer == id {
                     continue;
                 }
-                let name = service.get_property_val_str("name").unwrap_or("unknown").to_string();
+                let name = service
+                    .get_property_val_str("name")
+                    .and_then(crossdrop_proto::clean_device_name)
+                    .unwrap_or_else(|| "unknown".to_string());
                 let addrs = service
                     .get_addresses_v4()
                     .into_iter()
