@@ -2,7 +2,8 @@
 //!
 //! The device that owns the physical mouse and keyboard (the *source*) opens
 //! the channel to a neighbour (the *target*). The target first sends
-//! `Screen`, then the source drives it. Positions are absolute, in the
+//! `Screen`, then the source drives it; the target sends `Screen` again
+//! whenever its desktop changes size. Positions are absolute, in the
 //! target's own pixels, relative to the top-left corner of its desktop.
 //! Keys are USB HID usage codes, so both machines must use the same keyboard
 //! layout setting.
@@ -25,7 +26,8 @@ pub enum Button {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Msg {
-    /// Target → source, first message: size of the target's desktop.
+    /// Target → source: size of the target's desktop. First message, and
+    /// again whenever it changes.
     Screen {
         width: u32,
         height: u32,
