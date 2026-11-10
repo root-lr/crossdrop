@@ -260,6 +260,12 @@ fn restore_metadata(target: &Path, entry: &FileEntry) {
     }
 }
 
+/// Deletes abandoned partial files under `dir` (a download or desktop
+/// folder), so that a transfer never resumed does not keep its data forever.
+pub fn remove_stale_partials(dir: &Path) {
+    remove_stale(&dir.join(PARTIAL_DIR));
+}
+
 /// Deletes abandoned partial files and journals.
 fn remove_stale(partial: &Path) {
     let Ok(items) = std::fs::read_dir(partial) else { return };
