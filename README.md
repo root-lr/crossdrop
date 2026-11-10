@@ -152,7 +152,7 @@ CLI / app / extensions ──IPC──▶ crossdropd ══QUIC + TLS 1.3══ 
 ```
 
 One daemon per device owns the keys and the connections. Everything else —
-the CLI, the future desktop app, interdesk — talks to it over a local socket.
+the CLI, the desktop app, interdesk — talks to it over a local socket.
 Each service gets its own QUIC stream ("channel") on a shared connection.
 Details: [docs/protocol.md](docs/protocol.md).
 
