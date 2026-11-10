@@ -70,6 +70,10 @@ each [release](https://github.com/root-lr/crossdrop/releases).
 
 **From source:** `cargo install --git https://github.com/root-lr/crossdrop crossdrop-cli interdesk`
 
+**Keep the daemon running on Linux** (without Homebrew): a systemd user unit
+is in [`packaging/systemd/crossdropd.service`](packaging/systemd/crossdropd.service);
+its header says how to install it.
+
 The binaries are not signed yet: Windows shows a SmartScreen warning ("More
 info", then "Run anyway"); on macOS, run
 `xattr -dr com.apple.quarantine /Applications/crossdrop.app` if it refuses to open.
