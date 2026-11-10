@@ -108,6 +108,10 @@ pub async fn start(opts: Options) -> Result<Handle> {
     if config.clipboard_sync && system_clipboard.is_none() {
         tracing::warn!("no system clipboard here; `crossdrop clip send/get` still work");
     }
+    // Partial files of transfers never resumed: cleaned when the next
+    // transfer starts, and here, in case none ever comes.
+    let dirs = [config.download_dir.clone(), config.desktop_dir.clone()];
+    tokio::task::spawn_blocking(move || dirs.iter().for_each(|dir| files::remove_stale_partials(dir)));
     let daemon = daemon::Daemon::new(config.clone(), node.clone(), trust, system_clipboard);
 
     let mut tasks = vec![tokio::spawn(daemon.clone().accept_loop()), tokio::spawn(daemon.clone().clipboard_loop())];

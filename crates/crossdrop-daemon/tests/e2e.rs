@@ -317,3 +317,26 @@ async fn oversized_clipboard_text_is_refused_clearly() {
     a.shutdown();
     b.shutdown();
 }
+
+#[tokio::test]
+async fn abandoned_partial_files_are_removed_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let partial = dir.path().join("alpha").join("downloads").join(".crossdrop-partial");
+    std::fs::create_dir_all(&partial).unwrap();
+    let week_ago = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+    for name in ["old.part", "fresh.part"] {
+        std::fs::write(partial.join(name), "x").unwrap();
+    }
+    std::fs::File::options().write(true).open(partial.join("old.part")).unwrap().set_modified(week_ago).unwrap();
+
+    let a = daemon(dir.path(), "alpha").await;
+    for _ in 0..100 {
+        if !partial.join("old.part").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!partial.join("old.part").exists(), "a partial file untouched for a week must go");
+    assert!(partial.join("fresh.part").exists(), "a recent one may still be resumed");
+    a.shutdown();
+}
