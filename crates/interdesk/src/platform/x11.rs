@@ -32,7 +32,8 @@ use crate::session::Input;
 struct X11 {
     conn: RustConnection,
     root: Window,
-    screen: Rect,
+    /// Last known size of the root window (it changes with RandR).
+    screen: Mutex<Rect>,
     grabbed: AtomicBool,
     /// Wheel remainder in 1/120 notches (x, y), for smooth-scrolling sources.
     wheel: Mutex<(i32, i32)>,
@@ -52,7 +53,13 @@ pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
     let s = &conn.setup().roots[screen_num];
     let root = s.root;
     let screen = Rect { x: 0, y: 0, w: s.width_in_pixels as i32, h: s.height_in_pixels as i32 };
-    let x = Arc::new(X11 { conn, root, screen, grabbed: AtomicBool::new(false), wheel: Mutex::new((0, 0)) });
+    let x = Arc::new(X11 {
+        conn,
+        root,
+        screen: Mutex::new(screen),
+        grabbed: AtomicBool::new(false),
+        wheel: Mutex::new((0, 0)),
+    });
 
     let poller = x.clone();
     let tx = events.clone();
@@ -115,7 +122,7 @@ fn button_to_x(button: Button) -> u8 {
 
 impl X11 {
     fn center(&self) -> (i32, i32) {
-        self.screen.center()
+        self.screen.lock().unwrap().center()
     }
 
     fn translate(&self, event: Event) -> Option<Input> {
@@ -180,7 +187,14 @@ impl X11 {
 
 impl Platform for X11 {
     fn screen(&self) -> Rect {
-        self.screen
+        // The size given at connection time goes stale when the resolution
+        // or the monitors change: ask the server.
+        let size = self.conn.get_geometry(self.root).ok().and_then(|c| c.reply().ok());
+        let mut screen = self.screen.lock().unwrap();
+        if let Some(g) = size {
+            *screen = Rect { x: 0, y: 0, w: g.width as i32, h: g.height as i32 };
+        }
+        *screen
     }
 
     fn set_grab(&self, grab: bool) -> bool {

@@ -18,8 +18,21 @@ use crate::target;
 const RETRY: Duration = Duration::from_secs(3);
 
 enum Link {
-    Up { idx: usize, width: u32, height: u32, tx: UnboundedSender<Msg> },
-    Down { idx: usize },
+    Up {
+        idx: usize,
+        width: u32,
+        height: u32,
+        tx: UnboundedSender<Msg>,
+    },
+    /// The neighbour's desktop changed size.
+    Resized {
+        idx: usize,
+        width: u32,
+        height: u32,
+    },
+    Down {
+        idx: usize,
+    },
 }
 
 /// Runs interdesk until `shutdown` resolves.
@@ -44,14 +57,26 @@ pub async fn run(
     platform.set_grab(false);
 
     tokio::pin!(shutdown);
+    // This screen can change too (resolution, monitors).
+    let mut screen_check = tokio::time::interval(target::SCREEN_CHECK);
+    screen_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let actions = tokio::select! {
             Some(event) = input.recv() => session.on_input(event),
+            _ = screen_check.tick() => {
+                session.set_screen(platform.screen());
+                vec![]
+            }
             Some(link) = links.recv() => match link {
                 Link::Up { idx, width, height, tx } => {
                     info!(device = %layout.neighbors[idx].device, width, height, "neighbour ready");
                     writers[idx] = Some(tx);
                     session.set_screen(platform.screen());
+                    session.connected(idx, width, height);
+                    vec![]
+                }
+                Link::Resized { idx, width, height } => {
+                    info!(device = %layout.neighbors[idx].device, width, height, "neighbour resized");
                     session.connected(idx, width, height);
                     vec![]
                 }
@@ -171,8 +196,12 @@ async fn link_once(paths: &Paths, idx: usize, device: &str, links: &UnboundedSen
     links.send(Link::Up { idx, width, height, tx })?;
     let writer = forward(&mut rx, &mut wr);
     let reader = async {
-        // The target sends nothing more today; a read result means it is gone.
-        let _ = read_frame::<_, Msg>(&mut rd).await;
+        // The target only reports size changes; anything else ends the link.
+        while let Ok(msg) = read_frame::<_, Msg>(&mut rd).await {
+            if let Msg::Screen { width, height } = msg {
+                links.send(Link::Resized { idx, width, height })?;
+            }
+        }
         anyhow::Ok(())
     };
     tokio::select! {
