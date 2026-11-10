@@ -60,9 +60,18 @@ enum Command {
         id: Option<String>,
         #[arg(long, short)]
         yes: bool,
+        /// Accept every incoming transfer. Pairing requests are left alone:
+        /// each code must be checked.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
     },
     /// Reject a pairing request or an incoming transfer.
-    Reject { id: Option<String> },
+    Reject {
+        id: Option<String>,
+        /// Reject every pairing request and incoming transfer.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+    },
     /// Send files and folders to a paired device. Interrupted transfers resume.
     Send {
         #[arg(required = true)]
@@ -257,7 +266,39 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Command::Accept { id, yes } => match pick_request(&mut connect().await?, id).await? {
+        Command::Accept { all: true, .. } => {
+            let mut client = connect().await?;
+            let offers = client.offers().await?;
+            if offers.is_empty() {
+                bail!("no incoming transfer is waiting");
+            }
+            for offer in offers {
+                client.offer_answer(&offer.offer_id, true).await?;
+                println!("Receiving {} file(s) from {}.", offer.files, offer.peer_name);
+            }
+            let pairs = client.pair_requests().await?.len();
+            if pairs > 0 {
+                println!("{pairs} pairing request(s) still waiting: accept each one after checking its code.");
+            }
+        }
+
+        Command::Reject { all: true, .. } => {
+            let mut client = connect().await?;
+            let (pairs, offers) = (client.pair_requests().await?, client.offers().await?);
+            if pairs.is_empty() && offers.is_empty() {
+                bail!("nothing waiting");
+            }
+            for request in pairs {
+                client.pair_answer(&request.pair_id, false).await?;
+                println!("Rejected pairing with {}.", request.peer_name);
+            }
+            for offer in offers {
+                client.offer_answer(&offer.offer_id, false).await?;
+                println!("Declined the files from {}.", offer.peer_name);
+            }
+        }
+
+        Command::Accept { id, yes, .. } => match pick_request(&mut connect().await?, id).await? {
             Pending::Pair(request) => {
                 let mut client = connect().await?;
                 println!("{} ({}) wants to pair.", request.peer_name, short(&request.peer_id));
@@ -281,7 +322,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         },
 
-        Command::Reject { id } => match pick_request(&mut connect().await?, id).await? {
+        Command::Reject { id, .. } => match pick_request(&mut connect().await?, id).await? {
             Pending::Pair(request) => {
                 connect().await?.pair_answer(&request.pair_id, false).await?;
                 println!("Rejected pairing with {}.", request.peer_name);
@@ -409,7 +450,7 @@ async fn pick_request(client: &mut Client, id: Option<String>) -> Result<Pending
     match all.len() {
         0 => bail!("nothing waiting with that id; see `crossdrop requests`"),
         1 => Ok(all.remove(0).1),
-        _ => bail!("several requests are waiting; pass an id from `crossdrop requests`"),
+        _ => bail!("several requests are waiting; pass an id from `crossdrop requests`, or use --all"),
     }
 }
 
