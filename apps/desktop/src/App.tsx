@@ -140,6 +140,13 @@ export default function App() {
         </label>
       </header>
 
+      {data.layout_error && (
+        <div className="notice" role="alert">
+          The desk layout could not be read, so no neighbour is shown: {data.layout_error}. Fix or delete the file,
+          then place your devices again.
+        </div>
+      )}
+
       {(notice || error) && (
         <div className="notice" role="alert">
           {notice ?? error}

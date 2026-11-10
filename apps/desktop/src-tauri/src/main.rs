@@ -75,6 +75,8 @@ struct Overview {
     pairs: Vec<PairRequestInfo>,
     offers: Vec<OfferInfo>,
     layout: Vec<Neighbor>,
+    /// interdesk.toml could not be read; the desk shows no neighbour.
+    layout_error: Option<String>,
     sharing: bool,
     embedded: bool,
 }
@@ -84,13 +86,18 @@ struct Overview {
 async fn overview(app: State<'_, App>) -> Res<Overview> {
     let mut c = client(&app).await?;
     let (id, name, port, _) = c.status().await.map_err(err)?;
-    let layout = Layout::load(&interdesk::layout_path(&app.paths)).map_err(err)?;
+    // A broken interdesk.toml must not hide everything else.
+    let (layout, layout_error) = match Layout::load(&interdesk::layout_path(&app.paths)) {
+        Ok(layout) => (layout, None),
+        Err(e) => (Layout::default(), Some(err(e))),
+    };
     Ok(Overview {
         me: Me { id, name, port },
         devices: c.devices().await.map_err(err)?,
         pairs: c.pair_requests().await.map_err(err)?,
         offers: c.offers().await.map_err(err)?,
         layout: layout.neighbors.into_iter().map(|n| Neighbor { device: n.device, side: n.side }).collect(),
+        layout_error,
         sharing: app.sharing.lock().unwrap().is_some(),
         embedded: app.daemon.lock().unwrap().is_some(),
     })
