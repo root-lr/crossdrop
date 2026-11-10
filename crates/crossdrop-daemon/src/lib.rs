@@ -125,10 +125,11 @@ pub async fn start(opts: Options) -> Result<Handle> {
     Ok(Handle { id: identity.id(), port, paths, node, tasks, ipc_path, _discovery: discovery })
 }
 
-/// Runs the daemon until Ctrl+C.
+/// Runs the daemon until Ctrl+C or SIGTERM.
 pub async fn run(opts: Options) -> Result<()> {
+    let stop = crossdrop_sdk::shutdown_signal()?;
     let handle = start(opts).await?;
-    tokio::signal::ctrl_c().await?;
+    stop.await;
     info!("shutting down");
     handle.shutdown();
     Ok(())
