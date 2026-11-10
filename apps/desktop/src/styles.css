@@ -12,6 +12,16 @@
   --drop: #f2b705;
   --danger: #a3242c;
   --focus: #1f5fbf;
+  /* The desk mat, its grid, and this computer's screen in the middle. */
+  --desk: #dde4ea;
+  --grid: rgba(27, 37, 50, 0.05);
+  --screen: #1b2532;
+  --screen-edge: #2e3a4a;
+  --screen-text: #f7f9fa;
+  --screen-muted: #aeb9c6;
+  /* Text on the yellow drop colour, and the veil behind dialogs. */
+  --on-drop: #1b2532;
+  --backdrop: rgba(27, 37, 50, 0.45);
 
   --step--1: 0.8125rem;
   --step-0: 0.9375rem;
@@ -19,12 +29,30 @@
   --step-2: 1.5rem;
   --step-3: 2.25rem;
 
-  color-scheme: light;
+  color-scheme: light dark;
   font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1.45;
   color: var(--ink);
   background: var(--mat);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --mat: #141a21;
+    --paper: #1d252f;
+    --ink: #e6ebef;
+    --muted: #9aa7b6;
+    --line: #344150;
+    --online: #3fb7c1;
+    --danger: #ff8a92;
+    --focus: #7cb0ff;
+    --desk: #19212a;
+    --grid: rgba(230, 235, 239, 0.05);
+    --screen: #0b1016;
+    --screen-edge: #3a4859;
+    --backdrop: rgba(0, 0, 0, 0.6);
+  }
 }
 
 * {
@@ -238,8 +266,8 @@ input:focus-visible + .track {
   gap: 14px;
   padding: 22px;
   border-radius: 14px;
-  background: repeating-linear-gradient(0deg, transparent 0 23px, rgba(27, 37, 50, 0.05) 23px 24px),
-    repeating-linear-gradient(90deg, transparent 0 23px, rgba(27, 37, 50, 0.05) 23px 24px), #dde4ea;
+  background: repeating-linear-gradient(0deg, transparent 0 23px, var(--grid) 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px, var(--grid) 23px 24px), var(--desk);
 }
 
 .slot-top {
@@ -268,9 +296,9 @@ input:focus-visible + .track {
   justify-content: center;
   align-items: center;
   border-radius: 10px;
-  background: var(--ink);
-  color: var(--paper);
-  border: 6px solid #2e3a4a;
+  background: var(--screen);
+  color: var(--screen-text);
+  border: 6px solid var(--screen-edge);
   border-bottom-width: 14px;
 }
 
@@ -279,7 +307,7 @@ input:focus-visible + .track {
 }
 
 .screen span {
-  color: #aeb9c6;
+  color: var(--screen-muted);
   font-size: var(--step--1);
 }
 
@@ -308,11 +336,13 @@ input:focus-visible + .track {
 .neighbour.hover,
 .device.hover {
   background: var(--drop);
-  border-color: var(--ink);
+  border-color: var(--on-drop);
+  color: var(--on-drop);
 }
 
-.neighbour.hover span {
-  color: var(--ink);
+.neighbour.hover span,
+.device.hover .id {
+  color: var(--on-drop);
 }
 
 .empty {
@@ -515,7 +545,7 @@ progress::-moz-progress-bar {
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(27, 37, 50, 0.45);
+  background: var(--backdrop);
   display: grid;
   place-items: center;
   padding: 20px;
