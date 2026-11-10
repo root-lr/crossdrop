@@ -1,0 +1,21 @@
+name: Feature request
+description: An idea to make crossdrop more useful.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you would like to do
+      description: The situation and what gets in the way today. A concrete use case helps more than a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+      description: Optional. A command, a setting, a change in the app…
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Optional. Workarounds or other tools.

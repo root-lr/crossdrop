@@ -1,0 +1,60 @@
+name: Bug report
+description: Something does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! For a security issue, please follow SECURITY.md instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. On alpha: crossdrop pair bravo
+        2. On bravo: crossdrop accept
+        3. …
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part of crossdrop
+      multiple: true
+      options:
+        - Pairing
+        - Files
+        - Clipboard
+        - interdesk (mouse and keyboard)
+        - Desktop app
+        - Command line
+        - Installation / packaging
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `crossdrop --version` (and of `crossdrop status` if the daemon runs).
+    validations:
+      required: true
+  - type: textarea
+    id: systems
+    attributes:
+      label: Systems involved
+      description: Operating system and version of each device, and how they are connected (same Wi-Fi, Ethernet, VPN…).
+      placeholder: |
+        alpha: macOS 26.1, Wi-Fi
+        bravo: Windows 11 24H2, Ethernet
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Daemon logs
+      description: |
+        Run the daemon with `RUST_LOG=debug crossdrop daemon` (or look at `$(brew --prefix)/var/log/crossdrop.log`), reproduce, and paste the relevant lines. Device ids are fine to share; remove anything else you consider private.
+      render: text
