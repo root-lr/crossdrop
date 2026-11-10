@@ -140,6 +140,10 @@ enum Command {
     /// zsh: `crossdrop completions zsh > "${fpath[1]}/_crossdrop"`;
     /// fish: `crossdrop completions fish > ~/.config/fish/completions/crossdrop.fish`.
     Completions { shell: clap_complete::Shell },
+    /// Check this device's setup and say what to fix: data directory,
+    /// daemon, identity, paired devices, and the macOS Accessibility
+    /// permission interdesk needs.
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -455,6 +459,8 @@ async fn run(cli: Cli) -> Result<()> {
             outln!("{device} may no longer use {service}.");
         }
 
+        Command::Doctor => doctor(&paths).await?,
+
         Command::Completions { shell } => {
             use clap::CommandFactory;
             let mut script = Vec::new();
@@ -547,6 +553,80 @@ async fn pick_request(client: &mut Client, id: Option<String>) -> Result<Pending
         1 => Ok(all.remove(0).1),
         _ => bail!("several requests are waiting; pass an id from `crossdrop requests`, or use --all"),
     }
+}
+
+/// `crossdrop doctor`: one line per check, then a non-zero exit if
+/// something is broken.
+async fn doctor(paths: &Paths) -> Result<()> {
+    let mut problems = 0;
+    let mut report = |ok: Option<bool>, what: String| {
+        let tag = match ok {
+            Some(true) => "ok  ",
+            None => "warn",
+            Some(false) => {
+                problems += 1;
+                "FAIL"
+            }
+        };
+        outln!("{tag}  {what}");
+    };
+
+    let home = &paths.home;
+    report(Some(home.is_dir()), format!("data directory {}", home.display()));
+    #[cfg(unix)]
+    {
+        let max = if cfg!(any(target_os = "linux", target_os = "android")) { 107 } else { 103 };
+        let len = paths.ipc_endpoint().as_os_str().len();
+        report(Some(len <= max), format!("socket path length {len} bytes (at most {max})"));
+    }
+    let identity = home.join("identity.crt").is_file() && home.join("identity.key").is_file();
+    report(Some(identity), "device identity (identity.crt, identity.key)".into());
+
+    match Client::connect(paths.clone()).await {
+        Err(e) => report(Some(false), format!("daemon not reachable: {e:#}")),
+        Ok(mut client) => {
+            let (id, name, port, version) = client.status().await?;
+            report(Some(true), format!("daemon running: {name} ({}), UDP port {port}", short(&id)));
+            let same = version == env!("CARGO_PKG_VERSION");
+            let what = format!("daemon version {version}, this command {}", env!("CARGO_PKG_VERSION"));
+            report(if same { Some(true) } else { None }, what);
+            let devices = client.devices().await?;
+            let paired: Vec<_> = devices.iter().filter(|d| d.paired).collect();
+            if paired.is_empty() {
+                report(None, "no paired device yet: `crossdrop pair <name>`".into());
+            }
+            for d in paired {
+                let state = if d.online { "online" } else { "not reachable now" };
+                let addrs = if d.addrs.is_empty() { "no known address".to_string() } else { d.addrs.join(", ") };
+                report(if d.online { Some(true) } else { None }, format!("paired with {}: {state} ({addrs})", d.name));
+            }
+            let nearby = devices.iter().filter(|d| !d.paired).count();
+            report(Some(true), format!("{nearby} unpaired device(s) seen on the network"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    report(
+        if accessibility_allowed() { Some(true) } else { None },
+        "Accessibility permission of this terminal (needed by `interdesk run`)".into(),
+    );
+
+    if problems > 0 {
+        bail!("{problems} problem(s) found");
+    }
+    Ok(())
+}
+
+/// Whether this process (the terminal it runs in) may watch and drive the
+/// mouse and keyboard, as interdesk must.
+#[cfg(target_os = "macos")]
+fn accessibility_allowed() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    // SAFETY: no arguments, no preconditions.
+    unsafe { AXIsProcessTrusted() }
 }
 
 #[cfg(test)]

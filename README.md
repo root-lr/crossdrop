@@ -137,6 +137,7 @@ itself. From a script or a server:
 | `crossdrop clip share <device> [--off]` | Send this device's copies to a device, or stop |
 | `crossdrop allow <device> <service>` / `deny` | Manage permissions (`files`, `clipboard`, `input`, or a full name) |
 | `crossdrop unpair <device>` | Forget a device |
+| `crossdrop doctor` | Check the setup and say what to fix |
 
 All commands take `--home <dir>` to use another data directory, handy to run
 two daemons on one machine.
