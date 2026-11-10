@@ -111,8 +111,9 @@ Any paired device may open this service, whatever its permissions.
   journal per transfer keeps the chosen root name and the files already
   completed. Leftovers untouched for 7 days are deleted.
 - **Safety.** Path components are cleaned (control characters removed,
-  `\ : * ? " < > |` replaced by `_`); `..`, empty components and absolute
-  paths are refused. A root that already exists in the download folder gets a
+  `\ : * ? " < > |` replaced by `_`; on Windows, device names such as `CON`
+  or `nul.txt` get a `_` prefix); `..`, empty components and absolute paths
+  are refused. A root that already exists in the download folder gets a
   free name: `photos (1)`, `report (1).pdf`.
 
 ## Clipboard (`crossdrop/clipboard`)

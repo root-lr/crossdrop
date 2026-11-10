@@ -244,20 +244,10 @@ async fn expect_file_end<S: AsyncRead + Unpin>(io: &mut S) -> Result<String> {
 }
 
 /// Splits an offered path into safe components: no `..`, no absolute paths,
-/// no characters Windows forbids, no control characters.
+/// no characters Windows forbids, no control characters, no names Windows
+/// reserves for devices.
 fn sanitize_path(path: &str) -> Result<Vec<String>> {
-    let parts: Vec<String> = path
-        .split('/')
-        .map(|c| {
-            c.chars()
-                .filter(|ch| !ch.is_control())
-                .map(|ch| if "\\:*?\"<>|".contains(ch) { '_' } else { ch })
-                .collect::<String>()
-                .trim()
-                .trim_end_matches('.')
-                .to_string()
-        })
-        .collect();
+    let parts: Vec<String> = path.split('/').map(|c| sanitize_component(c, cfg!(windows))).collect();
     if parts.iter().any(|p| p.is_empty() || p == "..") {
         bail!("invalid path {path:?}");
     }
@@ -265,6 +255,39 @@ fn sanitize_path(path: &str) -> Result<Vec<String>> {
         bail!("reserved name {path:?}");
     }
     Ok(parts)
+}
+
+/// One path component made safe to create. `windows`: also avoid the device
+/// names Windows reserves (`CON`, `nul.txt`, `COM1.log`…), which cannot be
+/// created as files there, by prefixing them with `_`.
+fn sanitize_component(c: &str, windows: bool) -> String {
+    let name = c
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .map(|ch| if "\\:*?\"<>|".contains(ch) { '_' } else { ch })
+        .collect::<String>()
+        .trim()
+        .trim_end_matches('.')
+        .to_string();
+    if windows && is_windows_device_name(&name) {
+        format!("_{name}")
+    } else {
+        name
+    }
+}
+
+/// `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` (and the
+/// superscript-digit forms), whatever the case and the extension.
+fn is_windows_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    match stem.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            let (prefix, digit) = stem.split_at(stem.len().min(3));
+            matches!(prefix, "COM" | "LPT")
+                && matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+        }
+    }
 }
 
 /// A name for `root` that exists neither in `dir` nor among `taken`.
@@ -300,6 +323,18 @@ mod tests {
         assert!(sanitize_path("a//b").is_err());
         assert!(sanitize_path(".crossdrop-partial/x").is_err());
         assert_eq!(sanitize_path("dir/.gitignore").unwrap(), ["dir", ".gitignore"]);
+    }
+
+    #[test]
+    fn windows_device_names_are_renamed_there_only() {
+        for name in ["CON", "con.txt", "Nul.tar.gz", "COM1.log", "lpt9", "AUX ", "aux.c.orig", "com²"] {
+            assert_eq!(sanitize_component(name, true), format!("_{}", name.trim()), "{name}");
+        }
+        for name in ["CONSOLE", "com10", "COM0", "nullable.txt", "lpt", "my.con"] {
+            assert_eq!(sanitize_component(name, true), name, "{name}");
+        }
+        // Elsewhere these are ordinary names (Linux has drivers/…/aux.c).
+        assert_eq!(sanitize_component("aux.c", false), "aux.c");
     }
 
     #[test]
