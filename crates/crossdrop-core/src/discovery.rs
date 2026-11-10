@@ -91,7 +91,11 @@ fn instance_id(fullname: &str) -> Option<DeviceId> {
 
 impl Drop for Discovery {
     fn drop(&mut self) {
-        let _ = self.daemon.shutdown();
+        // Wait (briefly) for the goodbye packets, so that other devices drop
+        // this one from their lists now rather than when its record expires.
+        if let Ok(done) = self.daemon.shutdown() {
+            let _ = done.recv_timeout(std::time::Duration::from_secs(1));
+        }
     }
 }
 

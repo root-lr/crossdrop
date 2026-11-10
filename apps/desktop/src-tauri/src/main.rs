@@ -466,7 +466,7 @@ fn main() {
                 stop_sharing(&state);
                 let daemon = state.daemon.lock().unwrap().take();
                 if let Some(h) = daemon {
-                    h.shutdown();
+                    tauri::async_runtime::block_on(h.shutdown_gracefully());
                 }
             }
         });

@@ -45,9 +45,25 @@ pub struct Handle {
     _discovery: Option<Discovery>,
 }
 
+/// How long a graceful shutdown waits for peers to be told.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl Handle {
+    /// Stops at once. Peers notice when their connection times out; prefer
+    /// [`Handle::shutdown_gracefully`] when the process is about to exit.
     pub fn shutdown(self) {
         self.node.close();
+        self.stop_tasks();
+    }
+
+    /// Tells connected peers and the local network that this device goes
+    /// away (QUIC close, mDNS goodbye), then stops.
+    pub async fn shutdown_gracefully(self) {
+        self.node.close_gracefully(CLOSE_GRACE).await;
+        self.stop_tasks();
+    }
+
+    fn stop_tasks(self) {
         for task in &self.tasks {
             task.abort();
         }
@@ -131,7 +147,7 @@ pub async fn run(opts: Options) -> Result<()> {
     let handle = start(opts).await?;
     stop.await;
     info!("shutting down");
-    handle.shutdown();
+    handle.shutdown_gracefully().await;
     Ok(())
 }
 
