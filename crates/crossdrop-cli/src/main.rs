@@ -114,9 +114,10 @@ enum Command {
     Send {
         #[arg(required = true)]
         files: Vec<PathBuf>,
-        /// Target device: name or id prefix.
-        #[arg(long, short)]
-        to: String,
+        /// Target device: name or id prefix. Repeat to send to several
+        /// devices, one after the other.
+        #[arg(long, short, required = true)]
+        to: Vec<String>,
     },
     /// Share text with your devices' clipboards.
     #[command(subcommand)]
@@ -388,50 +389,19 @@ async fn run(cli: Cli) -> Result<()> {
         },
 
         Command::Send { files, to } => {
-            let mut stream = connect().await?.open_channel(&to, "crossdrop/files").await?;
-            let started = Instant::now();
-            let mut last = Instant::now();
-            let tty = std::io::stderr().is_terminal();
-            let mut on_event = |event: SendEvent<'_>| match event {
-                SendEvent::Waiting { files, bytes } => {
-                    eprintln!("Offering {files} file(s), {} to {to}…", human(bytes));
+            if let [one] = to.as_slice() {
+                return send_to(&paths, one, &files).await;
+            }
+            let mut failed = 0;
+            for device in &to {
+                if let Err(e) = send_to(&paths, device, &files).await {
+                    eprintln!("error: {device}: {e:#}");
+                    failed += 1;
                 }
-                SendEvent::Accepted { resumed } => {
-                    if resumed > 0 {
-                        eprintln!("Accepted. Resuming: {} already there.", human(resumed));
-                    }
-                }
-                SendEvent::Progress { path, done, total } => {
-                    // A terminal gets one line redrawn in place; a log or a
-                    // pipe gets plain lines, a few seconds apart.
-                    let every = if tty { 100 } else { 5000 };
-                    if done == total || last.elapsed().as_millis() > every {
-                        last = Instant::now();
-                        let pct = (done * 100).checked_div(total).unwrap_or(100);
-                        let line = format!("{pct:>3}%  {} / {}  {path}", human(done), human(total));
-                        if tty {
-                            eprint!("\r\x1b[K{line}");
-                            if done == total {
-                                eprintln!();
-                            }
-                        } else {
-                            eprintln!("{line}");
-                        }
-                    }
-                }
-            };
-            let report = match send_files(&mut stream, &files, &mut on_event).await {
-                Ok(r) => r,
-                Err(e) if e.downcast_ref::<Declined>().is_some() => bail!("{to} declined the files"),
-                Err(e) => return Err(e),
-            };
-            let secs = started.elapsed().as_secs_f64().max(0.001);
-            outln!(
-                "Sent {} file(s), {} in {secs:.1}s ({}/s).",
-                report.received,
-                human(report.bytes_sent),
-                human((report.bytes_sent as f64 / secs) as u64)
-            );
+            }
+            if failed > 0 {
+                bail!("could not send to {failed} of {} devices", to.len());
+            }
         }
 
         Command::Clip(Clip::Send { text, to }) => {
@@ -503,6 +473,55 @@ async fn run(cli: Cli) -> Result<()> {
 /// One JSON document on standard output.
 fn print_json(value: serde_json::Value) -> Result<()> {
     outln!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+/// Sends `files` to one device, with progress on stderr.
+async fn send_to(paths: &Paths, to: &str, files: &[PathBuf]) -> Result<()> {
+    let mut stream = Client::connect(paths.clone()).await?.open_channel(to, "crossdrop/files").await?;
+    let started = Instant::now();
+    let mut last = Instant::now();
+    let tty = std::io::stderr().is_terminal();
+    let mut on_event = |event: SendEvent<'_>| match event {
+        SendEvent::Waiting { files, bytes } => {
+            eprintln!("Offering {files} file(s), {} to {to}…", human(bytes));
+        }
+        SendEvent::Accepted { resumed } => {
+            if resumed > 0 {
+                eprintln!("Accepted. Resuming: {} already there.", human(resumed));
+            }
+        }
+        SendEvent::Progress { path, done, total } => {
+            // A terminal gets one line redrawn in place; a log or a
+            // pipe gets plain lines, a few seconds apart.
+            let every = if tty { 100 } else { 5000 };
+            if done == total || last.elapsed().as_millis() > every {
+                last = Instant::now();
+                let pct = (done * 100).checked_div(total).unwrap_or(100);
+                let line = format!("{pct:>3}%  {} / {}  {path}", human(done), human(total));
+                if tty {
+                    eprint!("\r\x1b[K{line}");
+                    if done == total {
+                        eprintln!();
+                    }
+                } else {
+                    eprintln!("{line}");
+                }
+            }
+        }
+    };
+    let report = match send_files(&mut stream, files, &mut on_event).await {
+        Ok(r) => r,
+        Err(e) if e.downcast_ref::<Declined>().is_some() => bail!("{to} declined the files"),
+        Err(e) => return Err(e),
+    };
+    let secs = started.elapsed().as_secs_f64().max(0.001);
+    outln!(
+        "Sent {} file(s), {} in {secs:.1}s ({}/s).",
+        report.received,
+        human(report.bytes_sent),
+        human((report.bytes_sent as f64 / secs) as u64)
+    );
     Ok(())
 }
 
