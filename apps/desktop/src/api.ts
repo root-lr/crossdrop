@@ -76,8 +76,9 @@ export const api = {
   setAutoAccept: (device: string, enabled: boolean) => invoke<void>("set_auto_accept", { device, enabled }),
   setClipboardSend: (device: string, enabled: boolean) => invoke<void>("set_clipboard_send", { device, enabled }),
   unpair: (device: string) => invoke<void>("unpair", { device }),
-  sendFiles: (device: string, paths: string[], desktop = false) =>
-    invoke<number>("send_files", { device, paths, desktop }),
+  /** `device`: id (or name); `label`: what the transfer list shows. */
+  sendFiles: (device: string, paths: string[], desktop = false, label?: string) =>
+    invoke<number>("send_files", { device, paths, desktop, label: label ?? null }),
   layoutSet: (side: Side, device: string | null) => invoke<void>("layout_set", { side, device }),
   sharingSet: (on: boolean) => invoke<void>("sharing_set", { on }),
 };

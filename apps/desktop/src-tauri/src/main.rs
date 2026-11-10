@@ -151,11 +151,20 @@ async fn set_clipboard_send(app: State<'_, App>, device: String, enabled: bool) 
 
 #[tauri::command]
 async fn unpair(handle: AppHandle, app: State<'_, App>, device: String) -> Res<()> {
-    client(&app).await?.unpair(&device).await.map_err(err)?;
+    let mut c = client(&app).await?;
+    // The layout knows devices by name; `device` may be an id.
+    let name = c
+        .devices()
+        .await
+        .map_err(err)?
+        .into_iter()
+        .find(|d| d.id == device || d.name.eq_ignore_ascii_case(&device))
+        .map_or_else(|| device.clone(), |d| d.name);
+    c.unpair(&device).await.map_err(err)?;
     // A forgotten device leaves the desk too.
     let file = interdesk::layout_path(&app.paths);
     let mut layout = Layout::load(&file).map_err(err)?;
-    if layout.remove(&device) {
+    if layout.remove(&name) {
         layout.save(&file).map_err(err)?;
         after_layout_change(&handle, &app).await?;
     }
@@ -176,17 +185,34 @@ struct Transfer {
 }
 
 /// Sends files in the background; progress arrives as `transfer` events.
+/// `device` is an id or a name; `label` is what the transfer list shows.
 #[tauri::command]
-async fn send_files(handle: AppHandle, app: State<'_, App>, device: String, paths: Vec<String>, desktop: bool) -> Res<u64> {
+async fn send_files(
+    handle: AppHandle,
+    app: State<'_, App>,
+    device: String,
+    paths: Vec<String>,
+    desktop: bool,
+    label: Option<String>,
+) -> Res<u64> {
     let id = app.transfers.fetch_add(1, Ordering::Relaxed) + 1;
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     let base = app.paths.clone();
-    tauri::async_runtime::spawn(transfer(handle, base, id, device, paths, desktop));
+    tauri::async_runtime::spawn(transfer(handle, base, id, device, label, paths, desktop));
     Ok(id)
 }
 
-async fn transfer(handle: AppHandle, base: Paths, id: u64, device: String, paths: Vec<PathBuf>, desktop: bool) {
-    let mut t = Transfer { id, device: device.clone(), files: 0, done: 0, total: 0, state: "waiting", message: String::new(), desktop };
+async fn transfer(
+    handle: AppHandle,
+    base: Paths,
+    id: u64,
+    device: String,
+    label: Option<String>,
+    paths: Vec<PathBuf>,
+    desktop: bool,
+) {
+    let shown = label.unwrap_or_else(|| device.clone());
+    let mut t = Transfer { id, device: shown, files: 0, done: 0, total: 0, state: "waiting", message: String::new(), desktop };
     let _ = handle.emit("transfer", t.clone());
     let result = async {
         let mut stream = Client::connect(base).await?.open_channel(&device, "crossdrop/files").await?;
@@ -409,7 +435,8 @@ fn on_zone_event(window: &tauri::Window, event: &WindowEvent) {
         let id = app.transfers.fetch_add(1, Ordering::Relaxed) + 1;
         let base = app.paths.clone();
         let handle = handle.clone();
-        tauri::async_runtime::spawn(transfer(handle, base, id, device, paths.into_iter().map(PathBuf::from).collect(), true));
+        let paths = paths.into_iter().map(PathBuf::from).collect();
+        tauri::async_runtime::spawn(transfer(handle, base, id, device, None, paths, true));
     }
 }
 
