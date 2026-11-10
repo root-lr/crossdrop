@@ -64,7 +64,14 @@ pub async fn run(
         };
         for action in actions {
             match action {
-                Action::Grab(on) => platform.set_grab(on),
+                Action::Grab(true) if !platform.set_grab(true) => {
+                    // Nothing was sent yet: stay here, as if the edge were closed.
+                    session.cancel_crossing();
+                    break;
+                }
+                Action::Grab(on) => {
+                    platform.set_grab(on);
+                }
                 Action::Warp(x, y) => platform.warp(x, y),
                 Action::Send(idx, msg) => {
                     if let Some(tx) = &writers[idx] {

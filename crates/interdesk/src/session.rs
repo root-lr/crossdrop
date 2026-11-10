@@ -62,13 +62,16 @@ pub struct Session {
     state: State,
     /// Keys held on the source while remote, for the escape shortcut.
     held: HashSet<u16>,
+    /// Crossing failed (input could not be captured): wait until the cursor
+    /// leaves the edge before trying again.
+    edge_blocked: bool,
 }
 
 impl Session {
     /// `sides[i]` is where neighbour `i` sits.
     pub fn new(screen: Rect, sides: Vec<Side>) -> Self {
         let n = sides.len();
-        Self { screen, sides, sizes: vec![None; n], state: State::Local, held: HashSet::new() }
+        Self { screen, sides, sizes: vec![None; n], state: State::Local, held: HashSet::new(), edge_blocked: false }
     }
 
     pub fn remote(&self) -> Option<usize> {
@@ -107,7 +110,13 @@ impl Session {
 
     fn local(&mut self, input: Input) -> Vec<Action> {
         let Input::Pos { x, y, pressed: false } = input else { return vec![] };
-        let Some(side) = edge_at(&self.screen, x, y) else { return vec![] };
+        let Some(side) = edge_at(&self.screen, x, y) else {
+            self.edge_blocked = false;
+            return vec![];
+        };
+        if self.edge_blocked {
+            return vec![];
+        }
         let Some(idx) = self.sides.iter().position(|s| *s == side) else { return vec![] };
         let Some((w, h)) = self.sizes[idx] else { return vec![] };
         let frac = along(&self.screen, side, x, y);
@@ -158,6 +167,17 @@ impl Session {
                 }
                 vec![Action::Send(idx, Msg::Key { hid: key, down })]
             }
+        }
+    }
+
+    /// The crossing just decided could not happen (the platform failed to
+    /// capture input): back to local, before anything was sent to the
+    /// neighbour. The edge stays closed until the cursor moves away from it.
+    pub fn cancel_crossing(&mut self) {
+        if matches!(self.state, State::Remote { .. }) {
+            self.state = State::Local;
+            self.held.clear();
+            self.edge_blocked = true;
         }
     }
 
@@ -232,6 +252,19 @@ mod tests {
         let a = s.disconnected(0);
         assert_eq!(a, vec![Action::Send(0, Msg::Leave), Action::Grab(false), Action::Warp(960, 540)]);
         assert!(s.on_input(Input::Pos { x: 1919, y: 100, pressed: false }).is_empty());
+    }
+
+    #[test]
+    fn a_failed_grab_keeps_the_cursor_here_until_it_leaves_the_edge() {
+        let mut s = session();
+        assert_eq!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: false })[0], Action::Grab(true));
+        s.cancel_crossing();
+        assert_eq!(s.remote(), None);
+        // Still at the edge: no new attempt on every move.
+        assert!(s.on_input(Input::Pos { x: 1919, y: 541, pressed: false }).is_empty());
+        // Away from the edge and back: try again.
+        assert!(s.on_input(Input::Pos { x: 1800, y: 541, pressed: false }).is_empty());
+        assert_eq!(s.on_input(Input::Pos { x: 1919, y: 541, pressed: false })[0], Action::Grab(true));
     }
 
     #[test]

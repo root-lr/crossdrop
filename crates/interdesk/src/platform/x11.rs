@@ -164,6 +164,12 @@ impl X11 {
         let _ = self.conn.flush();
     }
 
+    fn ungrab(&self) {
+        let _ = self.conn.ungrab_pointer(CURRENT_TIME);
+        let _ = self.conn.ungrab_keyboard(CURRENT_TIME);
+        let _ = self.conn.flush();
+    }
+
     fn clicks(&self, button: u8, n: i32) {
         for _ in 0..n {
             self.fake(xproto::BUTTON_PRESS_EVENT, button, 0, 0);
@@ -177,7 +183,7 @@ impl Platform for X11 {
         self.screen
     }
 
-    fn set_grab(&self, grab: bool) {
+    fn set_grab(&self, grab: bool) -> bool {
         if grab {
             let mask = EventMask::POINTER_MOTION | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE;
             let pointer = self
@@ -193,17 +199,19 @@ impl Platform for X11 {
             if pointer.map(|r| r.status) != Some(xproto::GrabStatus::SUCCESS)
                 || keyboard.map(|r| r.status) != Some(xproto::GrabStatus::SUCCESS)
             {
+                // Half a grab would send keys to both screens: drop it all.
                 warn!("could not grab the pointer or keyboard (another application holds it?)");
+                self.ungrab();
+                return false;
             }
             let (cx, cy) = self.center();
             self.grabbed.store(true, Ordering::Relaxed);
             self.warp(cx, cy);
         } else {
             self.grabbed.store(false, Ordering::Relaxed);
-            let _ = self.conn.ungrab_pointer(CURRENT_TIME);
-            let _ = self.conn.ungrab_keyboard(CURRENT_TIME);
-            let _ = self.conn.flush();
+            self.ungrab();
         }
+        true
     }
 
     fn warp(&self, x: i32, y: i32) {
