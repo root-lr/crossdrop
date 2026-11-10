@@ -112,8 +112,12 @@ enum Command {
     },
     /// Send files and folders to a paired device. Interrupted transfers resume.
     Send {
+        /// Files and folders; `-` sends standard input as one file.
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// Name given to the file read from standard input.
+        #[arg(long, value_name = "NAME", default_value = "stdin.txt")]
+        name: String,
         /// Target device: name or id prefix. Repeat to send to several
         /// devices, one after the other.
         #[arg(long, short, required = true)]
@@ -392,7 +396,17 @@ async fn run(cli: Cli) -> Result<()> {
             }
         },
 
-        Command::Send { files, to } => {
+        Command::Send { mut files, name, to } => {
+            // Standard input becomes a file first: offers need its size, and
+            // a cut transfer can then resume.
+            let _stdin_dir = match files.iter().position(|f| f.as_os_str() == "-") {
+                Some(i) => {
+                    let (dir, file) = stdin_to_file(&name)?;
+                    files[i] = file;
+                    Some(dir)
+                }
+                None => None,
+            };
             if let [one] = to.as_slice() {
                 return send_to(&paths, one, &files).await;
             }
@@ -480,6 +494,29 @@ async fn run(cli: Cli) -> Result<()> {
 fn print_json(value: serde_json::Value) -> Result<()> {
     outln!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+/// Removes a temporary folder when dropped.
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Copies standard input to `<temp>/crossdrop-stdin-<pid>/<name>`.
+fn stdin_to_file(name: &str) -> Result<(TempDir, PathBuf)> {
+    let valid = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']);
+    if !valid {
+        bail!("--name must be a plain file name, not {name:?}");
+    }
+    let dir = TempDir(std::env::temp_dir().join(format!("crossdrop-stdin-{}", std::process::id())));
+    std::fs::create_dir_all(&dir.0)?;
+    let path = dir.0.join(name);
+    let mut file = std::fs::File::create(&path)?;
+    std::io::copy(&mut std::io::stdin().lock(), &mut file)?;
+    Ok((dir, path))
 }
 
 /// Sends `files` to one device, with progress on stderr.
