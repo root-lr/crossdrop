@@ -60,11 +60,21 @@ async fn connect_endpoint(endpoint: &Path) -> std::io::Result<IpcStream> {
 async fn connect_endpoint(endpoint: &Path) -> std::io::Result<IpcStream> {
     use tokio::net::windows::named_pipe::ClientOptions;
     const ERROR_PIPE_BUSY: i32 = 231;
+    // Every instance busy: the daemon creates the next one right after each
+    // accept, so this lasts milliseconds. A daemon that never frees one is
+    // stuck; say so instead of waiting forever.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         match ClientOptions::new().open(endpoint) {
             Ok(client) => return Ok(client),
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && std::time::Instant::now() < deadline => {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the crossdrop daemon did not accept the connection within 5 s",
+                ));
             }
             Err(e) => return Err(e),
         }
