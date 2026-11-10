@@ -56,5 +56,5 @@ body:
     attributes:
       label: Daemon logs
       description: |
-        Run the daemon with `RUST_LOG=debug crossdrop daemon` (or look at `$(brew --prefix)/var/log/crossdrop.log`), reproduce, and paste the relevant lines. Device ids are fine to share; remove anything else you consider private.
+        Run the daemon with `RUST_LOG=debug crossdrop daemon` (or look at `$(brew --prefix)/var/log/crossdrop.log`, or at `app.log` in the data directory when the desktop app runs the daemon), reproduce, and paste the relevant lines. Device ids are fine to share; remove anything else you consider private.
       render: text

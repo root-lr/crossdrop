@@ -47,6 +47,10 @@ starts one inside itself.
 Drag a file to the edge of your screen that faces a neighbour: a yellow zone
 opens, drop it there and the file lands on that computer's desktop.
 
+The app logs to `app.log` in the data directory (`~/Library/Application
+Support/crossdrop` on macOS, `~/.config/crossdrop` on Linux,
+`%APPDATA%\crossdrop` on Windows), including the daemon it runs.
+
 Install it from a [release](https://github.com/root-lr/crossdrop/releases) or
 with `brew install --cask crossdrop-app` (see [Install](#install)). To build it:
 
