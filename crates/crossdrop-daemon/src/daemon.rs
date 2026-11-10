@@ -644,11 +644,7 @@ impl Daemon {
     // ---------------------------------------------------------------- IPC
 
     pub fn register_service(&self, service: &str) -> Result<mpsc::UnboundedReceiver<Event>> {
-        let valid = service.contains('/')
-            && !service.starts_with("crossdrop/")
-            && service.len() <= 64
-            && service.chars().all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c));
-        if !valid {
+        if !is_extension_service(service) {
             bail!("invalid service name {service:?} (expected e.g. \"myapp/feature\")");
         }
         let mut services = self.services.lock().unwrap();
@@ -715,6 +711,15 @@ impl Daemon {
                 Ok(Response::Ok)
             }
             Request::SetPermission { device, service, allow } => {
+                // Revoking always works, so that a mistyped grant can be removed.
+                let grantable = [services::FILES, services::CLIPBOARD].contains(&service.as_str())
+                    || is_extension_service(&service);
+                if allow && !grantable {
+                    bail!(
+                        "unknown service {service:?}: use files, clipboard, input, or an extension's full name \
+                         such as \"myapp/feature\""
+                    );
+                }
                 let id = self.resolve_device(&device)?;
                 let mut trust = self.trust.lock().unwrap();
                 let entry = trust.devices.get_mut(&id.to_string()).ok_or_else(|| anyhow!("{device} is not paired"))?;
@@ -862,6 +867,15 @@ fn check_clipboard_size(text: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// A service name an extension may register (and a device be allowed):
+/// `vendor/feature`, outside the built-in `crossdrop/` space.
+fn is_extension_service(service: &str) -> bool {
+    service.contains('/')
+        && !service.starts_with("crossdrop/")
+        && service.len() <= 64
+        && service.chars().all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
 }
 
 #[cfg(test)]
@@ -1104,5 +1118,33 @@ mod tests {
         write_frame(&mut send, &header).await.unwrap();
         let reply: ChannelReply = read_frame(&mut recv).await.unwrap();
         assert!(matches!(reply, ChannelReply::Rejected { reason } if reason.contains("version")));
+    }
+
+    #[tokio::test]
+    async fn only_real_services_can_be_granted() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let peer = Identity::generate().unwrap().id();
+        trust.devices.insert(peer.to_string(), TrustedDevice::new("bravo".into(), None));
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+        let set = |service: &str, allow: bool| Request::SetPermission {
+            device: "bravo".into(),
+            service: service.into(),
+            allow,
+        };
+
+        for typo in ["clipbaord", "crossdrop/clipbaord", "crossdrop/pair", "bad name/x"] {
+            let err = daemon.handle_request(set(typo, true)).await.unwrap_err();
+            assert!(err.to_string().contains("unknown service"), "{typo}: {err}");
+        }
+        for ok in [services::CLIPBOARD, services::INTERDESK_INPUT, "example/echo"] {
+            daemon.handle_request(set(ok, true)).await.unwrap();
+        }
+        // A bad entry already in trusted.toml can still be revoked.
+        daemon.trust.lock().unwrap().devices.get_mut(&peer.to_string()).unwrap().permissions.push("clipbaord".into());
+        daemon.handle_request(set("clipbaord", false)).await.unwrap();
+        let permissions = daemon.trusted(peer).unwrap().permissions;
+        assert!(!permissions.contains(&"clipbaord".to_string()), "{permissions:?}");
     }
 }
