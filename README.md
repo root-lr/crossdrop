@@ -133,6 +133,10 @@ itself. From a script or a server:
 All commands take `--home <dir>` to use another data directory, handy to run
 two daemons on one machine.
 
+Shell completion: `crossdrop completions bash|zsh|fish|powershell|elvish`
+prints a script to install where your shell looks for them (see
+`crossdrop completions --help`).
+
 ## interdesk: one mouse and keyboard for all your computers
 
 ```sh

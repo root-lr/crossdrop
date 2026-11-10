@@ -86,6 +86,12 @@ enum Command {
     Deny { device: String, service: String },
     /// Forget a paired device.
     Unpair { device: String },
+    /// Print a completion script for your shell.
+    ///
+    /// bash: `crossdrop completions bash > ~/.local/share/bash-completion/completions/crossdrop`;
+    /// zsh: `crossdrop completions zsh > "${fpath[1]}/_crossdrop"`;
+    /// fish: `crossdrop completions fish > ~/.config/fish/completions/crossdrop.fish`.
+    Completions { shell: clap_complete::Shell },
 }
 
 #[derive(Subcommand)]
@@ -379,6 +385,11 @@ async fn run(cli: Cli) -> Result<()> {
             let service = service_name(&service);
             connect().await?.set_permission(&device, &service, false).await?;
             println!("{device} may no longer use {service}.");
+        }
+
+        Command::Completions { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(shell, &mut Cli::command(), "crossdrop", &mut std::io::stdout());
         }
 
         Command::Unpair { device } => {
