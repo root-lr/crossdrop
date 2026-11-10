@@ -28,6 +28,9 @@ const UNPAIR_NOTICE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PAIR_REQUESTS: usize = 8;
 /// How long the responder waits for the initiator to acknowledge the answer.
 const PAIR_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest clipboard text shared, in bytes. Once escaped as JSON it must fit
+/// in one frame (`MAX_FRAME_LEN`, 8 MiB) even in the worst case (6×).
+const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 /// How long an opened channel waits for its client to attach.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an incoming transfer waits for the user to accept it.
@@ -421,6 +424,10 @@ impl Daemon {
                 continue;
             }
             *self.clip_known.lock().unwrap() = Some(text.clone());
+            if let Err(e) = check_clipboard_size(&text) {
+                info!("clipboard not shared: {e}");
+                continue;
+            }
             let n = self.broadcast_clipboard(text).await;
             debug!(devices = n, "clipboard shared");
         }
@@ -753,22 +760,27 @@ impl Daemon {
                 trust.save()?;
                 Ok(Response::Ok)
             }
-            Request::ClipboardSend { text, device } => match device {
-                Some(device) => {
-                    let id = self.resolve_device(&device)?;
-                    if self.trusted(id).is_none() {
-                        bail!("{device} is not paired");
+            Request::ClipboardSend { text, device } => {
+                check_clipboard_size(&text)?;
+                match device {
+                    Some(device) => {
+                        let id = self.resolve_device(&device)?;
+                        if self.trusted(id).is_none() {
+                            bail!("{device} is not paired");
+                        }
+                        self.send_clipboard(id, text).await?;
+                        Ok(Response::Sent { count: 1 })
                     }
-                    self.send_clipboard(id, text).await?;
-                    Ok(Response::Sent { count: 1 })
-                }
-                None => {
-                    if self.clipboard_peers().is_empty() {
-                        bail!("this device sends its clipboard to no device; run `crossdrop allow <device> clipboard`");
+                    None => {
+                        if self.clipboard_peers().is_empty() {
+                            bail!(
+                                "this device sends its clipboard to no device; run `crossdrop allow <device> clipboard`"
+                            );
+                        }
+                        Ok(Response::Sent { count: self.broadcast_clipboard(text).await })
                     }
-                    Ok(Response::Sent { count: self.broadcast_clipboard(text).await })
                 }
-            },
+            }
             Request::ClipboardGet => {
                 let (text, from) = match self.clip_received.lock().unwrap().clone() {
                     Some((t, f)) => (Some(t), Some(f)),
@@ -838,6 +850,18 @@ async fn connect(node: &Node, addr: SocketAddr) -> Result<(Connection, DeviceId)
 /// A name another device gave itself, safe to store and show.
 fn peer_name(raw: &str) -> String {
     crossdrop_proto::clean_device_name(raw).unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Clipboard texts larger than [`MAX_CLIPBOARD_BYTES`] are not sent.
+fn check_clipboard_size(text: &str) -> Result<()> {
+    if text.len() > MAX_CLIPBOARD_BYTES {
+        bail!(
+            "text too large to share ({:.1} MiB, at most {} MiB); send it as a file",
+            text.len() as f64 / (1024.0 * 1024.0),
+            MAX_CLIPBOARD_BYTES / (1024 * 1024)
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

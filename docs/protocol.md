@@ -125,7 +125,8 @@ Any paired device may open this service, whatever its permissions.
 ## Clipboard (`crossdrop/clipboard`)
 
 One channel per update: the sender writes `{"text":"…"}`, the receiver
-applies it and answers `{"type":"accepted"}`.
+applies it and answers `{"type":"accepted"}`. Texts over 1 MiB are not shared
+(send them as a file).
 
 Sharing is opt-in per device and symmetric by default: `crossdrop allow X
 clipboard` lets X write to this device's clipboard **and** makes this device

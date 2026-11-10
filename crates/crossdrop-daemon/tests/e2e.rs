@@ -301,3 +301,19 @@ async fn clipboard_can_flow_one_way() {
     a.shutdown();
     b.shutdown();
 }
+
+#[tokio::test]
+async fn oversized_clipboard_text_is_refused_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = daemon(dir.path(), "alpha").await;
+    let b = daemon(dir.path(), "bravo").await;
+    pair(&a, &b).await;
+    client(&b).await.set_permission("alpha", "crossdrop/clipboard", true).await.unwrap();
+
+    let big = "x".repeat(2 * 1024 * 1024);
+    let err = client(&a).await.clipboard_send(&big, Some("bravo")).await.unwrap_err();
+    assert!(err.to_string().contains("too large"), "{err}");
+    assert_eq!(client(&a).await.clipboard_send("small", Some("bravo")).await.unwrap(), 1);
+    a.shutdown();
+    b.shutdown();
+}
