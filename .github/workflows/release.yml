@@ -25,7 +25,7 @@ jobs:
     name: Start a fresh draft
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The tag names the release; the binaries print the versions declared
       # in the manifests. Refuse to build if they disagree.
       - name: Check that the tag matches the declared versions
@@ -63,6 +63,11 @@ jobs:
             os: ubuntu-22.04
             archive: tar.gz
             tauri_args: ""
+          # Raspberry Pi, ARM servers and laptops.
+          - name: Linux (ARM64)
+            os: ubuntu-22.04-arm
+            archive: tar.gz
+            tauri_args: ""
           # One universal build for Apple silicon and Intel Macs.
           - name: macOS (universal)
             os: macos-latest
@@ -76,8 +81,8 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -85,7 +90,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             .
@@ -97,7 +102,7 @@ jobs:
         working-directory: apps/desktop
 
       # Desktop app installers (.dmg, .msi/.exe, .deb/.rpm/.AppImage) on a draft release.
-      - uses: tauri-apps/tauri-action@v1
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         with:
           projectPath: apps/desktop
           tagName: ${{ env.VERSION }}

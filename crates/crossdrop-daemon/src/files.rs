@@ -157,6 +157,11 @@ where
         let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
         offsets.push(if have <= entry.size { have } else { 0 });
     }
+    // Refuse now rather than fill the disk and fail at the end.
+    let needed: u64 = offer.entries.iter().zip(&offsets).map(|(e, o)| e.size - o).sum();
+    if let Some(free) = free_space(&partial) {
+        check_space(needed, free)?;
+    }
     t.save()?;
     write_frame(io, &Files::Answer { accepted: true, offsets: offsets.clone() }).await?;
 
@@ -264,6 +269,48 @@ fn restore_metadata(target: &Path, entry: &FileEntry) {
 /// folder), so that a transfer never resumed does not keep its data forever.
 pub fn remove_stale_partials(dir: &Path) {
     remove_stale(&dir.join(PARTIAL_DIR));
+}
+
+/// Room left on the disk once a transfer is stored, for everything else.
+const SPARE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn check_space(needed: u64, free: u64) -> Result<()> {
+    if needed.saturating_add(SPARE_BYTES) > free {
+        let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+        bail!("not enough disk space: {:.1} MiB to receive, {:.1} MiB free", mib(needed), mib(free));
+    }
+    Ok(())
+}
+
+/// Bytes available to this user on the file system holding `dir`, if the
+/// system tells.
+#[cfg(unix)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is a valid C string and `stat` a writable statvfs.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)] // the field types differ between systems
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+#[cfg(windows)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut free = 0u64;
+    // SAFETY: `wide` is NUL-terminated; the other outputs may be null.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(free)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn free_space(_: &Path) -> Option<u64> {
+    None
 }
 
 /// Deletes abandoned partial files and journals.
@@ -419,6 +466,18 @@ mod tests {
         write_frame(&mut a, &offer).await.unwrap();
         let err = read_offer(&mut b).await.err().unwrap();
         assert!(err.to_string().contains("twice"), "{err}");
+    }
+
+    #[test]
+    fn transfers_that_would_fill_the_disk_are_refused() {
+        let gib = 1024 * 1024 * 1024;
+        assert!(check_space(gib, 2 * gib).is_ok());
+        let err = check_space(2 * gib, gib).unwrap_err();
+        assert!(err.to_string().contains("not enough disk space"), "{err}");
+        // Leaves room for the rest of the system.
+        assert!(check_space(gib, gib).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(free_space(dir.path()).is_some_and(|free| free > 0));
     }
 
     #[test]

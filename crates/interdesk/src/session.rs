@@ -85,9 +85,20 @@ impl Session {
         self.screen = screen;
     }
 
+    /// Neighbour `idx` is reachable with a `width`×`height` desktop. Also
+    /// called when that size changes; if the cursor is there, it stays
+    /// inside the new size.
     pub fn connected(&mut self, idx: usize, width: u32, height: u32) {
+        let (width, height) = (width.max(1), height.max(1));
         if let Some(s) = self.sizes.get_mut(idx) {
-            *s = Some((width.max(1), height.max(1)));
+            *s = Some((width, height));
+        }
+        if let State::Remote { idx: at, ref mut x, ref mut y, ref mut w, ref mut h } = self.state {
+            if at == idx {
+                (*w, *h) = (width as i64, height as i64);
+                *x = (*x).clamp(0, *w - 1);
+                *y = (*y).clamp(0, *h - 1);
+            }
         }
     }
 
@@ -265,6 +276,15 @@ mod tests {
         // Away from the edge and back: try again.
         assert!(s.on_input(Input::Pos { x: 1800, y: 541, pressed: false }).is_empty());
         assert_eq!(s.on_input(Input::Pos { x: 1919, y: 541, pressed: false })[0], Action::Grab(true));
+    }
+
+    #[test]
+    fn a_neighbour_that_shrinks_keeps_the_cursor_inside() {
+        let mut s = session();
+        s.on_input(Input::Pos { x: 1919, y: 540, pressed: false });
+        s.on_input(Input::Delta { dx: 2000, dy: 600 }); // at (2000, 1320) on 2560×1440
+        s.connected(0, 1280, 720);
+        assert_eq!(s.on_input(Input::Delta { dx: 1, dy: 0 }), vec![Action::Send(0, Msg::Move { x: 1279, y: 719 })]);
     }
 
     #[test]

@@ -131,12 +131,13 @@ itself. From a script or a server:
 | `crossdrop devices` | Paired and nearby devices |
 | `crossdrop pair <name \| id \| ip:port>` | Start pairing |
 | `crossdrop requests` / `accept` / `reject` | Answer pairing requests and incoming transfers |
-| `crossdrop send <files or folders…> --to <device>` | Send, or resume sending |
+| `crossdrop send <files or folders…> --to <device> [--to <device>…]` | Send, or resume sending |
 | `crossdrop auto-accept <device> [--off]` | Trust a device's files without asking |
 | `crossdrop clip send [text] [--to device]` / `clip get` | Share text with clipboards |
 | `crossdrop clip share <device> [--off]` | Send this device's copies to a device, or stop |
 | `crossdrop allow <device> <service>` / `deny` | Manage permissions (`files`, `clipboard`, `input`, or a full name) |
 | `crossdrop unpair <device>` | Forget a device |
+| `crossdrop doctor` | Check the setup and say what to fix |
 
 All commands take `--home <dir>` to use another data directory, handy to run
 two daemons on one machine.

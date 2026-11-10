@@ -114,9 +114,10 @@ enum Command {
     Send {
         #[arg(required = true)]
         files: Vec<PathBuf>,
-        /// Target device: name or id prefix.
-        #[arg(long, short)]
-        to: String,
+        /// Target device: name or id prefix. Repeat to send to several
+        /// devices, one after the other.
+        #[arg(long, short, required = true)]
+        to: Vec<String>,
     },
     /// Share text with your devices' clipboards.
     #[command(subcommand)]
@@ -139,6 +140,10 @@ enum Command {
     /// zsh: `crossdrop completions zsh > "${fpath[1]}/_crossdrop"`;
     /// fish: `crossdrop completions fish > ~/.config/fish/completions/crossdrop.fish`.
     Completions { shell: clap_complete::Shell },
+    /// Check this device's setup and say what to fix: data directory,
+    /// daemon, identity, paired devices, and the macOS Accessibility
+    /// permission interdesk needs.
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -388,50 +393,19 @@ async fn run(cli: Cli) -> Result<()> {
         },
 
         Command::Send { files, to } => {
-            let mut stream = connect().await?.open_channel(&to, "crossdrop/files").await?;
-            let started = Instant::now();
-            let mut last = Instant::now();
-            let tty = std::io::stderr().is_terminal();
-            let mut on_event = |event: SendEvent<'_>| match event {
-                SendEvent::Waiting { files, bytes } => {
-                    eprintln!("Offering {files} file(s), {} to {to}…", human(bytes));
+            if let [one] = to.as_slice() {
+                return send_to(&paths, one, &files).await;
+            }
+            let mut failed = 0;
+            for device in &to {
+                if let Err(e) = send_to(&paths, device, &files).await {
+                    eprintln!("error: {device}: {e:#}");
+                    failed += 1;
                 }
-                SendEvent::Accepted { resumed } => {
-                    if resumed > 0 {
-                        eprintln!("Accepted. Resuming: {} already there.", human(resumed));
-                    }
-                }
-                SendEvent::Progress { path, done, total } => {
-                    // A terminal gets one line redrawn in place; a log or a
-                    // pipe gets plain lines, a few seconds apart.
-                    let every = if tty { 100 } else { 5000 };
-                    if done == total || last.elapsed().as_millis() > every {
-                        last = Instant::now();
-                        let pct = (done * 100).checked_div(total).unwrap_or(100);
-                        let line = format!("{pct:>3}%  {} / {}  {path}", human(done), human(total));
-                        if tty {
-                            eprint!("\r\x1b[K{line}");
-                            if done == total {
-                                eprintln!();
-                            }
-                        } else {
-                            eprintln!("{line}");
-                        }
-                    }
-                }
-            };
-            let report = match send_files(&mut stream, &files, &mut on_event).await {
-                Ok(r) => r,
-                Err(e) if e.downcast_ref::<Declined>().is_some() => bail!("{to} declined the files"),
-                Err(e) => return Err(e),
-            };
-            let secs = started.elapsed().as_secs_f64().max(0.001);
-            outln!(
-                "Sent {} file(s), {} in {secs:.1}s ({}/s).",
-                report.received,
-                human(report.bytes_sent),
-                human((report.bytes_sent as f64 / secs) as u64)
-            );
+            }
+            if failed > 0 {
+                bail!("could not send to {failed} of {} devices", to.len());
+            }
         }
 
         Command::Clip(Clip::Send { text, to }) => {
@@ -485,6 +459,8 @@ async fn run(cli: Cli) -> Result<()> {
             outln!("{device} may no longer use {service}.");
         }
 
+        Command::Doctor => doctor(&paths).await?,
+
         Command::Completions { shell } => {
             use clap::CommandFactory;
             let mut script = Vec::new();
@@ -503,6 +479,55 @@ async fn run(cli: Cli) -> Result<()> {
 /// One JSON document on standard output.
 fn print_json(value: serde_json::Value) -> Result<()> {
     outln!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+/// Sends `files` to one device, with progress on stderr.
+async fn send_to(paths: &Paths, to: &str, files: &[PathBuf]) -> Result<()> {
+    let mut stream = Client::connect(paths.clone()).await?.open_channel(to, "crossdrop/files").await?;
+    let started = Instant::now();
+    let mut last = Instant::now();
+    let tty = std::io::stderr().is_terminal();
+    let mut on_event = |event: SendEvent<'_>| match event {
+        SendEvent::Waiting { files, bytes } => {
+            eprintln!("Offering {files} file(s), {} to {to}…", human(bytes));
+        }
+        SendEvent::Accepted { resumed } => {
+            if resumed > 0 {
+                eprintln!("Accepted. Resuming: {} already there.", human(resumed));
+            }
+        }
+        SendEvent::Progress { path, done, total } => {
+            // A terminal gets one line redrawn in place; a log or a
+            // pipe gets plain lines, a few seconds apart.
+            let every = if tty { 100 } else { 5000 };
+            if done == total || last.elapsed().as_millis() > every {
+                last = Instant::now();
+                let pct = (done * 100).checked_div(total).unwrap_or(100);
+                let line = format!("{pct:>3}%  {} / {}  {path}", human(done), human(total));
+                if tty {
+                    eprint!("\r\x1b[K{line}");
+                    if done == total {
+                        eprintln!();
+                    }
+                } else {
+                    eprintln!("{line}");
+                }
+            }
+        }
+    };
+    let report = match send_files(&mut stream, files, &mut on_event).await {
+        Ok(r) => r,
+        Err(e) if e.downcast_ref::<Declined>().is_some() => bail!("{to} declined the files"),
+        Err(e) => return Err(e),
+    };
+    let secs = started.elapsed().as_secs_f64().max(0.001);
+    outln!(
+        "Sent {} file(s), {} in {secs:.1}s ({}/s).",
+        report.received,
+        human(report.bytes_sent),
+        human((report.bytes_sent as f64 / secs) as u64)
+    );
     Ok(())
 }
 
@@ -528,6 +553,80 @@ async fn pick_request(client: &mut Client, id: Option<String>) -> Result<Pending
         1 => Ok(all.remove(0).1),
         _ => bail!("several requests are waiting; pass an id from `crossdrop requests`, or use --all"),
     }
+}
+
+/// `crossdrop doctor`: one line per check, then a non-zero exit if
+/// something is broken.
+async fn doctor(paths: &Paths) -> Result<()> {
+    let mut problems = 0;
+    let mut report = |ok: Option<bool>, what: String| {
+        let tag = match ok {
+            Some(true) => "ok  ",
+            None => "warn",
+            Some(false) => {
+                problems += 1;
+                "FAIL"
+            }
+        };
+        outln!("{tag}  {what}");
+    };
+
+    let home = &paths.home;
+    report(Some(home.is_dir()), format!("data directory {}", home.display()));
+    #[cfg(unix)]
+    {
+        let max = if cfg!(any(target_os = "linux", target_os = "android")) { 107 } else { 103 };
+        let len = paths.ipc_endpoint().as_os_str().len();
+        report(Some(len <= max), format!("socket path length {len} bytes (at most {max})"));
+    }
+    let identity = home.join("identity.crt").is_file() && home.join("identity.key").is_file();
+    report(Some(identity), "device identity (identity.crt, identity.key)".into());
+
+    match Client::connect(paths.clone()).await {
+        Err(e) => report(Some(false), format!("daemon not reachable: {e:#}")),
+        Ok(mut client) => {
+            let (id, name, port, version) = client.status().await?;
+            report(Some(true), format!("daemon running: {name} ({}), UDP port {port}", short(&id)));
+            let same = version == env!("CARGO_PKG_VERSION");
+            let what = format!("daemon version {version}, this command {}", env!("CARGO_PKG_VERSION"));
+            report(if same { Some(true) } else { None }, what);
+            let devices = client.devices().await?;
+            let paired: Vec<_> = devices.iter().filter(|d| d.paired).collect();
+            if paired.is_empty() {
+                report(None, "no paired device yet: `crossdrop pair <name>`".into());
+            }
+            for d in paired {
+                let state = if d.online { "online" } else { "not reachable now" };
+                let addrs = if d.addrs.is_empty() { "no known address".to_string() } else { d.addrs.join(", ") };
+                report(if d.online { Some(true) } else { None }, format!("paired with {}: {state} ({addrs})", d.name));
+            }
+            let nearby = devices.iter().filter(|d| !d.paired).count();
+            report(Some(true), format!("{nearby} unpaired device(s) seen on the network"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    report(
+        if accessibility_allowed() { Some(true) } else { None },
+        "Accessibility permission of this terminal (needed by `interdesk run`)".into(),
+    );
+
+    if problems > 0 {
+        bail!("{problems} problem(s) found");
+    }
+    Ok(())
+}
+
+/// Whether this process (the terminal it runs in) may watch and drive the
+/// mouse and keyboard, as interdesk must.
+#[cfg(target_os = "macos")]
+fn accessibility_allowed() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    // SAFETY: no arguments, no preconditions.
+    unsafe { AXIsProcessTrusted() }
 }
 
 #[cfg(test)]

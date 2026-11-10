@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import {
   api,
   bytes,
@@ -95,6 +96,8 @@ export default function App() {
       un.then((f) => f());
     };
   }, []);
+
+  useNotifyNewRequests(data);
 
   if (!data) {
     return (
@@ -339,6 +342,46 @@ export default function App() {
 
 /** Transfers that will not change any more. */
 const FINISHED: Transfer["state"][] = ["done", "declined", "failed"];
+
+/** Asks the system to show a notification, requesting permission the first time. */
+async function notify(title: string, body: string) {
+  let allowed = await isPermissionGranted();
+  if (!allowed) allowed = (await requestPermission()) === "granted";
+  if (allowed) sendNotification({ title, body });
+}
+
+/**
+ * Pairing requests and incoming files wait for an answer (two and five
+ * minutes): tell the user when one arrives while the window is not in front.
+ * Requests already there when the app starts are not announced.
+ */
+function useNotifyNewRequests(data: Overview | null) {
+  const seen = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    const items = [
+      ...data.pairs.map((r) => ({
+        key: `pair:${r.pair_id}`,
+        title: `${r.peer_name} wants to pair`,
+        body: `Accept only if it shows the code ${r.sas}.`,
+      })),
+      ...data.offers.map((o) => ({
+        key: `offer:${o.offer_id}`,
+        title: `${o.peer_name} wants to send you files`,
+        body: `${o.files} ${o.files === 1 ? "file" : "files"}, ${bytes(o.total_bytes)}: ${o.preview.join(", ")}`,
+      })),
+    ];
+    if (seen.current === null) {
+      seen.current = new Set(items.map((i) => i.key));
+      return;
+    }
+    for (const item of items) {
+      if (seen.current.has(item.key)) continue;
+      seen.current.add(item.key);
+      if (!document.hasFocus()) notify(item.title, item.body).catch(() => {});
+    }
+  }, [data]);
+}
 
 const STATE_TEXT: Record<Transfer["state"], string> = {
   waiting: "Waiting for them to accept",
