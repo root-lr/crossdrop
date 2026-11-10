@@ -25,6 +25,24 @@ jobs:
     name: Start a fresh draft
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      # The tag names the release; the binaries print the versions declared
+      # in the manifests. Refuse to build if they disagree.
+      - name: Check that the tag matches the declared versions
+        run: |
+          want="${VERSION#v}"
+          bad=0
+          check() {
+            if [ "$2" != "$want" ]; then
+              echo "::error file=$1::$1 declares version $2, the tag is $VERSION"
+              bad=1
+            fi
+          }
+          check Cargo.toml "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          check apps/desktop/src-tauri/Cargo.toml "$(sed -n 's/^version = "\(.*\)"/\1/p' apps/desktop/src-tauri/Cargo.toml | head -1)"
+          check apps/desktop/src-tauri/tauri.conf.json "$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)"
+          check apps/desktop/package.json "$(jq -r .version apps/desktop/package.json)"
+          exit $bad
       - name: Remove an earlier draft of this version
         run: |
           ids=$(gh api "repos/${{ github.repository }}/releases" \
