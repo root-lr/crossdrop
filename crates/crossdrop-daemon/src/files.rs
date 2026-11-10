@@ -210,6 +210,7 @@ where
         }
         let target = if target.exists() { unique_path(&target) } else { target };
         tokio::fs::rename(&part, &target).await?;
+        restore_metadata(&target, entry);
         t.journal.done.insert(entry.path.clone(), actual);
         t.save()?;
         info!(from, file = %target.display(), size = entry.size, resumed = offset, "file received");
@@ -222,6 +223,19 @@ where
     }
     let _ = std::fs::remove_file(&t.journal_path);
     Ok(received)
+}
+
+/// Gives a received file the sender's modification time. Best effort: a
+/// file system that refuses only loses the date, not the file.
+fn restore_metadata(target: &Path, entry: &FileEntry) {
+    if entry.mtime == 0 {
+        return;
+    }
+    let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(entry.mtime);
+    let set = std::fs::File::options().write(true).open(target).and_then(|f| f.set_modified(mtime));
+    if let Err(e) = set {
+        warn!(file = %target.display(), "cannot set the modification time: {e}");
+    }
 }
 
 /// Deletes abandoned partial files and journals.
@@ -464,5 +478,19 @@ mod tests {
         assert!(receiver.await.unwrap().is_err());
         assert!(!part.exists(), "a corrupted partial file must be discarded");
         assert!(!dl.join("f.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn received_files_keep_their_modification_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("old.txt");
+        std::fs::write(&src, "from 2020").unwrap();
+        let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        std::fs::File::options().write(true).open(&src).unwrap().set_modified(then).unwrap();
+        let dl = dir.path().join("dl");
+
+        transfer(&[src], &dl).await;
+        let got = std::fs::metadata(dl.join("old.txt")).unwrap().modified().unwrap();
+        assert_eq!(got, then);
     }
 }

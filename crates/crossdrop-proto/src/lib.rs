@@ -158,7 +158,8 @@ pub mod wire {
         pub path: String,
         pub size: u64,
         /// Modification time, seconds since the Unix epoch. Part of the
-        /// resume key, so a changed file restarts from zero.
+        /// resume key, so a changed file restarts from zero; given back to
+        /// the received file.
         pub mtime: u64,
     }
 
