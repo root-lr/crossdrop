@@ -50,7 +50,7 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, toml::to_string_pretty(&config)?)?;
+        crossdrop_sdk::write_atomic(path, toml::to_string_pretty(&config)?.as_bytes())?;
         Ok(config)
     }
 }
@@ -159,9 +159,7 @@ impl TrustStore {
 
     pub fn save(&self) -> Result<()> {
         let file = TrustFile { devices: self.devices.clone() };
-        let tmp = self.path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml::to_string_pretty(&file)?)?;
-        std::fs::rename(&tmp, &self.path)?;
+        crossdrop_sdk::write_atomic(&self.path, toml::to_string_pretty(&file)?.as_bytes())?;
         Ok(())
     }
 }
