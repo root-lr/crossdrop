@@ -35,6 +35,8 @@ const OFFER_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a cached connection may take to open a channel before it is
 /// considered dead.
 const STALE_CHECK: Duration = Duration::from_secs(3);
+/// How long a peer has to send the header of a stream it opened.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long dialing a device may take.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the system clipboard is checked for changes.
@@ -151,10 +153,16 @@ impl Daemon {
         // Incoming or outgoing, the peer's endpoint is the one it listens on.
         self.remember_addr(peer, conn.remote_address());
         self.conns.lock().unwrap().insert(peer, conn.clone());
-        while let Ok(pending) = PendingChannel::next(&conn).await {
+        while let Ok((send, recv)) = conn.accept_bi().await {
             let this = self.clone();
             let conn = conn.clone();
             tokio::spawn(async move {
+                let pending = match tokio::time::timeout(HEADER_TIMEOUT, PendingChannel::read_header(send, recv)).await
+                {
+                    Ok(Ok(pending)) => pending,
+                    Ok(Err(e)) => return debug!(peer = %peer.short(), "bad channel header: {e:#}"),
+                    Err(_) => return debug!(peer = %peer.short(), "no channel header in time"),
+                };
                 let service = pending.header.service.clone();
                 if let Err(e) = this.handle_channel(peer, conn, pending).await {
                     warn!(peer = %peer.short(), %service, "channel failed: {e:#}");
@@ -1017,5 +1025,17 @@ mod tests {
         let answer: Pair = read_frame(&mut channel.recv).await.unwrap();
         assert!(matches!(answer, Pair::Response { accepted: false, .. }));
         assert_eq!(daemon.incoming_pairs.lock().unwrap().len(), MAX_PAIR_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn a_stream_without_header_does_not_block_the_next_channels() {
+        let (_daemon, addr, peer, _dir) = responder();
+        let (conn, _) = peer.connect(addr).await.unwrap();
+        // One byte of a length prefix, then nothing.
+        let (mut stuck, _recv) = conn.open_bi().await.unwrap();
+        stuck.write_all(&[0]).await.unwrap();
+
+        let next = tokio::time::timeout(Duration::from_secs(2), open_channel(&conn, services::PAIR)).await;
+        assert!(matches!(next, Ok(Ok(_))), "the second channel was held up");
     }
 }

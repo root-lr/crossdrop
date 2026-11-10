@@ -115,7 +115,14 @@ pub struct PendingChannel {
 impl PendingChannel {
     /// Waits for the next stream the peer opens on `conn` and reads its header.
     pub async fn next(conn: &Connection) -> Result<Self> {
-        let (send, mut recv) = conn.accept_bi().await?;
+        let (send, recv) = conn.accept_bi().await?;
+        Self::read_header(send, recv).await
+    }
+
+    /// Reads the header of a stream the peer opened. Lets a caller accept
+    /// streams in a loop and read each header in its own task, so that a
+    /// stream without a header does not hold up the next ones.
+    pub async fn read_header(send: SendStream, mut recv: RecvStream) -> Result<Self> {
         let header: OpenChannel = read_frame_max(&mut recv, MAX_SMALL_FRAME_LEN).await?;
         Ok(Self { header, send, recv })
     }
