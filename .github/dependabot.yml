@@ -21,6 +21,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Its refs name Rust toolchains (stable, 1.88), not releases of the action.
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns: ["*"]
