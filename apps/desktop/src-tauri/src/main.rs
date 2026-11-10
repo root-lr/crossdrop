@@ -440,12 +440,32 @@ fn on_zone_event(window: &tauri::Window, event: &WindowEvent) {
     }
 }
 
-fn main() {
+/// Logs go to the terminal in development. A released app has no terminal
+/// (none at all on Windows), so they go to `app.log` in the data directory,
+/// started afresh once it passes a few megabytes.
+fn init_logging(paths: &Paths) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let file = if cfg!(debug_assertions) { None } else { open_log(paths).ok() };
+    match file {
+        Some(file) => {
+            tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(Mutex::new(file)).init()
+        }
+        None => tracing_subscriber::fmt().with_env_filter(filter).init(),
+    }
+}
 
+fn open_log(paths: &Paths) -> std::io::Result<std::fs::File> {
+    const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+    std::fs::create_dir_all(&paths.home)?;
+    let path = paths.home.join("app.log");
+    let full = std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_BYTES);
+    std::fs::OpenOptions::new().create(true).append(!full).write(true).truncate(full).open(path)
+}
+
+fn main() {
     let paths = Paths::resolve(None).expect("no data directory");
+    init_logging(&paths);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(App {
