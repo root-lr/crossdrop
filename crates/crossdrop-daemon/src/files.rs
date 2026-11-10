@@ -47,6 +47,10 @@ pub async fn read_offer<S: AsyncRead + Unpin>(io: &mut S) -> Result<Offer> {
     if entries.is_empty() || entries.len() > MAX_ENTRIES {
         bail!("offer with {} files refused", entries.len());
     }
+    let mut seen = std::collections::HashSet::new();
+    if let Some(dup) = entries.iter().find(|e| !seen.insert(e.path.as_str())) {
+        bail!("offer lists {:?} twice", dup.path);
+    }
     let parts = entries.iter().map(|e| sanitize_path(&e.path)).collect::<Result<Vec<_>>>()?;
     Ok(Offer { entries, desktop, parts })
 }
@@ -363,6 +367,16 @@ mod tests {
         let no_ext = sanitize_component(&"x".repeat(300), false);
         assert_eq!(no_ext.len(), MAX_COMPONENT_BYTES);
         assert_eq!(sanitize_component("photo.jpeg", false), "photo.jpeg");
+    }
+
+    #[tokio::test]
+    async fn an_offer_with_the_same_path_twice_is_refused() {
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        let entry = FileEntry { path: "photos/a.jpg".into(), size: 1, mtime: 0 };
+        let offer = Files::Offer { entries: vec![entry.clone(), entry], desktop: false };
+        write_frame(&mut a, &offer).await.unwrap();
+        let err = read_offer(&mut b).await.err().unwrap();
+        assert!(err.to_string().contains("twice"), "{err}");
     }
 
     #[test]
