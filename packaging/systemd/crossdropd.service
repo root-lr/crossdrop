@@ -1,0 +1,29 @@
+# crossdrop daemon as a systemd user service (Linux).
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp crossdropd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now crossdropd
+#
+# Logs: journalctl --user -u crossdropd
+# To keep it running while you are logged out: loginctl enable-linger "$USER"
+
+[Unit]
+Description=crossdrop daemon: clipboard, files, mouse and keyboard across your devices
+Documentation=https://github.com/root-lr/crossdrop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# `crossdrop daemon` is the same daemon as crossdropd and comes with every
+# install. %h is your home directory: adjust the path if crossdrop is not
+# in ~/.cargo/bin (e.g. /usr/local/bin/crossdrop). systemctl stop sends
+# SIGTERM, which the daemon handles by telling its peers it is leaving.
+ExecStart=%h/.cargo/bin/crossdrop daemon
+Restart=on-failure
+RestartSec=3
+# Clipboard sharing needs the graphical session's DISPLAY / WAYLAND_DISPLAY,
+# which `systemctl --user import-environment` or the desktop usually provides.
+
+[Install]
+WantedBy=default.target
