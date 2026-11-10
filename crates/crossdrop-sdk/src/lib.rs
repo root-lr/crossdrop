@@ -89,7 +89,7 @@ impl Client {
     /// Sends one request and waits for its response.
     pub async fn request(&mut self, req: &Request) -> Result<Response> {
         write_frame(&mut self.stream, req).await?;
-        let resp: Response = read_frame(&mut self.stream).await?;
+        let resp: Response = read_frame(&mut self.stream).await.map_err(version_hint)?;
         if let Response::Error { message } = resp {
             bail!(message);
         }
@@ -213,7 +213,24 @@ async fn attach(paths: &Paths, channel_id: &str) -> Result<IpcStream> {
 }
 
 fn unexpected(resp: Response) -> anyhow::Error {
-    anyhow!("unexpected response from daemon: {resp:?}")
+    anyhow!("unexpected response from daemon: {resp:?}. {VERSION_HINT}")
+}
+
+const VERSION_HINT: &str = concat!(
+    "The daemon may run another version of crossdrop than this client (",
+    env!("CARGO_PKG_VERSION"),
+    "); compare with `crossdrop status` and restart the daemon."
+);
+
+/// An answer the client cannot read, or no answer at all to a request (the
+/// daemon closes the connection on a request it cannot parse), usually means
+/// the daemon and this client are different versions.
+fn version_hint(e: crossdrop_proto::FrameError) -> anyhow::Error {
+    use crossdrop_proto::FrameError;
+    match e {
+        FrameError::Json(_) | FrameError::Closed => anyhow::Error::new(e).context(VERSION_HINT),
+        other => other.into(),
+    }
 }
 
 /// A registered service. Drop it to unregister.
@@ -254,4 +271,18 @@ impl Incoming {
 /// Re-exported so callers can build paths without extra dependencies.
 pub fn default_home() -> Result<PathBuf> {
     Paths::resolve(None).map(|p| p.home)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreadable_answers_point_at_a_version_mismatch() {
+        let bad = serde_json::from_str::<Response>("{\"type\":\"from_the_future\"}").unwrap_err();
+        let msg = format!("{:#}", version_hint(crossdrop_proto::FrameError::Json(bad)));
+        assert!(msg.contains("another version"), "{msg}");
+        let io = std::io::Error::other("broken pipe");
+        assert!(!format!("{:#}", version_hint(io.into())).contains("another version"));
+    }
 }

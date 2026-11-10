@@ -36,8 +36,9 @@ Devices can also be reached by `ip:port` when multicast is blocked.
 ## Framing
 
 Control messages are frames: a big-endian `u32` length, then a UTF-8 JSON body
-(max 8 MiB). Tagged enums use a `"type"` field in `snake_case`. Bulk data is
-never framed.
+(max 8 MiB; 4 KiB for channel headers and replies and for pairing messages,
+which any device on the network may send). Tagged enums use a `"type"` field
+in `snake_case`. Bulk data is never framed.
 
 ## Channels
 
@@ -53,10 +54,11 @@ the service.
 
 Acceptance rules on the receiving device:
 
-1. `crossdrop/pair` is open to anyone (it is how trust starts).
-2. Any other service requires the peer to be in `trusted.toml`, else `not paired`.
-3. The service must be in that device's `permissions`, else `permission denied`.
-4. The service must be built in or registered by a running extension, else
+1. `version` must be `1`, else `channel version … is not supported`.
+2. `crossdrop/pair` is open to anyone (it is how trust starts).
+3. Any other service requires the peer to be in `trusted.toml`, else `not paired`.
+4. The service must be in that device's `permissions`, else `permission denied`.
+5. The service must be built in or registered by a running extension, else
    `service … is not available`.
 
 ## Pairing (`crossdrop/pair`)

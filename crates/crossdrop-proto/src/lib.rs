@@ -24,6 +24,11 @@ pub const MDNS_SERVICE_TYPE: &str = "_crossdrop._udp.local.";
 /// Upper bound for a single control frame. Bulk data never goes through frames.
 pub const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
 
+/// Upper bound for frames that any device on the network may send: channel
+/// headers and replies, pairing messages. A few KiB, so that unpaired peers
+/// cannot make the daemon allocate [`MAX_FRAME_LEN`] per stream.
+pub const MAX_SMALL_FRAME_LEN: u32 = 4 * 1024;
+
 /// Well-known service names.
 pub mod services {
     /// Pairing handshake. The only service an unpaired device may open.
@@ -92,6 +97,16 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
+    read_frame_max(r, MAX_FRAME_LEN).await
+}
+
+/// [`read_frame`] with a smaller size limit, for frames read before the peer
+/// is known to be trusted (see [`MAX_SMALL_FRAME_LEN`]).
+pub async fn read_frame_max<R, T>(r: &mut R, max: u32) -> Result<T, FrameError>
+where
+    R: AsyncRead + Unpin,
+    T: DeserializeOwned,
+{
     let mut len = [0u8; 4];
     match r.read_exact(&mut len).await {
         Ok(_) => {}
@@ -99,7 +114,7 @@ where
         Err(e) => return Err(e.into()),
     }
     let len = u32::from_be_bytes(len);
-    if len > MAX_FRAME_LEN {
+    if len > max.min(MAX_FRAME_LEN) {
         return Err(FrameError::TooLarge(len));
     }
     let mut body = vec![0u8; len as usize];
@@ -339,6 +354,15 @@ mod tests {
         drop(a);
         let err = read_frame::<_, wire::ChannelReply>(&mut b).await.unwrap_err();
         assert!(matches!(err, FrameError::Closed));
+    }
+
+    #[tokio::test]
+    async fn small_frame_limit_applies() {
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        let big = wire::Pair::Request { name: "x".repeat(MAX_SMALL_FRAME_LEN as usize) };
+        write_frame(&mut a, &big).await.unwrap();
+        let err = read_frame_max::<_, wire::Pair>(&mut b, MAX_SMALL_FRAME_LEN).await.unwrap_err();
+        assert!(matches!(err, FrameError::TooLarge(_)));
     }
 
     #[tokio::test]

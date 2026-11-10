@@ -168,6 +168,12 @@ async fn run(cli: Cli) -> Result<()> {
             println!("id       {id}");
             println!("port     {port}/udp");
             println!("version  {version}");
+            if version != env!("CARGO_PKG_VERSION") {
+                eprintln!(
+                    "warning: the daemon runs {version} but this command is {}; restart the daemon to use the same version",
+                    env!("CARGO_PKG_VERSION")
+                );
+            }
         }
 
         Command::Devices => {

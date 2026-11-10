@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_proto::wire::{ChannelReply, OpenChannel};
-use crossdrop_proto::{read_frame, write_frame};
+use crossdrop_proto::{read_frame_max, write_frame, MAX_SMALL_FRAME_LEN};
 use quinn::{Connection, RecvStream, SendStream};
 use rustls::pki_types::CertificateDer;
 
@@ -98,7 +98,7 @@ pub async fn open_channel(conn: &Connection, service: &str) -> Result<Channel> {
     let (mut send, mut recv) = conn.open_bi().await?;
     let header = OpenChannel { service: service.to_string(), version: CHANNEL_VERSION };
     write_frame(&mut send, &header).await?;
-    match read_frame::<_, ChannelReply>(&mut recv).await? {
+    match read_frame_max::<_, ChannelReply>(&mut recv, MAX_SMALL_FRAME_LEN).await? {
         ChannelReply::Accepted => Ok(Channel { send, recv }),
         ChannelReply::Rejected { reason } => Err(Rejected(reason).into()),
     }
@@ -115,8 +115,15 @@ pub struct PendingChannel {
 impl PendingChannel {
     /// Waits for the next stream the peer opens on `conn` and reads its header.
     pub async fn next(conn: &Connection) -> Result<Self> {
-        let (send, mut recv) = conn.accept_bi().await?;
-        let header: OpenChannel = read_frame(&mut recv).await?;
+        let (send, recv) = conn.accept_bi().await?;
+        Self::read_header(send, recv).await
+    }
+
+    /// Reads the header of a stream the peer opened. Lets a caller accept
+    /// streams in a loop and read each header in its own task, so that a
+    /// stream without a header does not hold up the next ones.
+    pub async fn read_header(send: SendStream, mut recv: RecvStream) -> Result<Self> {
+        let header: OpenChannel = read_frame_max(&mut recv, MAX_SMALL_FRAME_LEN).await?;
         Ok(Self { header, send, recv })
     }
 

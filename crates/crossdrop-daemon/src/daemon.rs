@@ -2,17 +2,17 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_core::{
     open_channel, peer_id, sas, Channel, Connection, DeviceId, Discovered, Node, PendingChannel, Rejected,
+    CHANNEL_VERSION,
 };
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
-use crossdrop_proto::{read_frame, services, write_frame};
+use crossdrop_proto::{read_frame, read_frame_max, services, write_frame, MAX_SMALL_FRAME_LEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -35,6 +35,8 @@ const OFFER_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a cached connection may take to open a channel before it is
 /// considered dead.
 const STALE_CHECK: Duration = Duration::from_secs(3);
+/// How long a peer has to send the header of a stream it opened.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long dialing a device may take.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the system clipboard is checked for changes.
@@ -73,7 +75,6 @@ pub(crate) struct Daemon {
     clip_known: Mutex<Option<String>>,
     /// Last text received from a peer, with the sender's name.
     clip_received: Mutex<Option<(String, String)>>,
-    counter: AtomicU64,
 }
 
 impl Daemon {
@@ -92,7 +93,6 @@ impl Daemon {
             clipboard,
             clip_known: Mutex::default(),
             clip_received: Mutex::default(),
-            counter: AtomicU64::new(0),
         })
     }
 
@@ -100,14 +100,12 @@ impl Daemon {
         self.node.id()
     }
 
+    /// A fresh unguessable id (128 bits, hex) for a channel, an offer or a
+    /// pairing. Channel ids are what a local client presents to attach.
     fn new_token(&self) -> String {
-        let n = self.counter.fetch_add(1, Ordering::Relaxed);
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let mut h = blake3::Hasher::new();
-        h.update(self.id().as_bytes());
-        h.update(&n.to_le_bytes());
-        h.update(&t.to_le_bytes());
-        h.finalize().to_hex()[..16].to_string()
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("the OS random number generator failed");
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     fn trusted(&self, id: DeviceId) -> Option<TrustedDevice> {
@@ -151,10 +149,16 @@ impl Daemon {
         // Incoming or outgoing, the peer's endpoint is the one it listens on.
         self.remember_addr(peer, conn.remote_address());
         self.conns.lock().unwrap().insert(peer, conn.clone());
-        while let Ok(pending) = PendingChannel::next(&conn).await {
+        while let Ok((send, recv)) = conn.accept_bi().await {
             let this = self.clone();
             let conn = conn.clone();
             tokio::spawn(async move {
+                let pending = match tokio::time::timeout(HEADER_TIMEOUT, PendingChannel::read_header(send, recv)).await
+                {
+                    Ok(Ok(pending)) => pending,
+                    Ok(Err(e)) => return debug!(peer = %peer.short(), "bad channel header: {e:#}"),
+                    Err(_) => return debug!(peer = %peer.short(), "no channel header in time"),
+                };
                 let service = pending.header.service.clone();
                 if let Err(e) = this.handle_channel(peer, conn, pending).await {
                     warn!(peer = %peer.short(), %service, "channel failed: {e:#}");
@@ -170,6 +174,12 @@ impl Daemon {
 
     async fn handle_channel(self: Arc<Self>, peer: DeviceId, conn: Connection, pending: PendingChannel) -> Result<()> {
         let service = pending.header.service.clone();
+        let version = pending.header.version;
+        if version != CHANNEL_VERSION {
+            return pending
+                .reject(format!("channel version {version} is not supported (expected {CHANNEL_VERSION})"))
+                .await;
+        }
         if service == services::PAIR {
             return self.handle_incoming_pair(peer, conn, pending).await;
         }
@@ -506,10 +516,12 @@ impl Daemon {
         }
         let mut io = open_channel(&pair.conn, services::PAIR).await?.into_io();
         write_frame(&mut io, &Pair::Request { name: self.config.name.clone() }).await?;
-        let answer =
-            tokio::time::timeout(PAIR_DECISION_TIMEOUT + Duration::from_secs(10), read_frame::<_, Pair>(&mut io))
-                .await
-                .context("the other device did not answer in time")??;
+        let answer = tokio::time::timeout(
+            PAIR_DECISION_TIMEOUT + Duration::from_secs(10),
+            read_frame_max::<_, Pair>(&mut io, MAX_SMALL_FRAME_LEN),
+        )
+        .await
+        .context("the other device did not answer in time")??;
         let _ = io.shutdown().await;
         let Pair::Response { accepted, name } = answer else { bail!("unexpected pairing message") };
         let name = peer_name(&name);
@@ -527,7 +539,9 @@ impl Daemon {
         pending: PendingChannel,
     ) -> Result<()> {
         let mut io = pending.accept().await?.into_io();
-        let Pair::Request { name } = tokio::time::timeout(Duration::from_secs(30), read_frame(&mut io)).await?? else {
+        let Pair::Request { name } =
+            tokio::time::timeout(Duration::from_secs(30), read_frame_max(&mut io, MAX_SMALL_FRAME_LEN)).await??
+        else {
             bail!("unexpected pairing message");
         };
         let name = peer_name(&name);
@@ -1013,5 +1027,48 @@ mod tests {
         let answer: Pair = read_frame(&mut channel.recv).await.unwrap();
         assert!(matches!(answer, Pair::Response { accepted: false, .. }));
         assert_eq!(daemon.incoming_pairs.lock().unwrap().len(), MAX_PAIR_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn a_stream_without_header_does_not_block_the_next_channels() {
+        let (_daemon, addr, peer, _dir) = responder();
+        let (conn, _) = peer.connect(addr).await.unwrap();
+        // One byte of a length prefix, then nothing.
+        let (mut stuck, _recv) = conn.open_bi().await.unwrap();
+        stuck.write_all(&[0]).await.unwrap();
+
+        let next = tokio::time::timeout(Duration::from_secs(2), open_channel(&conn, services::PAIR)).await;
+        assert!(matches!(next, Ok(Ok(_))), "the second channel was held up");
+    }
+
+    #[tokio::test]
+    async fn tokens_are_random_and_long() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        let daemon = Daemon::new(Config::default(), node, trust, None);
+        let (a, b) = (daemon.new_token(), daemon.new_token());
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_channel_version_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let addr = node.local_addr().unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        tokio::spawn(Daemon::new(Config::default(), node, trust, None).accept_loop());
+
+        let peer = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let (conn, _) = peer.connect(addr).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        let header =
+            crossdrop_proto::wire::OpenChannel { service: services::PAIR.into(), version: CHANNEL_VERSION + 1 };
+        write_frame(&mut send, &header).await.unwrap();
+        let reply: ChannelReply = read_frame(&mut recv).await.unwrap();
+        assert!(matches!(reply, ChannelReply::Rejected { reason } if reason.contains("version")));
     }
 }
