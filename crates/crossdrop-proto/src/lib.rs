@@ -185,6 +185,10 @@ pub mod wire {
             /// `interdesk/input`.
             #[serde(default)]
             desktop: bool,
+            /// Empty folders to create, same path rules as entries. Omitted
+            /// when there are none, so older peers see the same offers.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            dirs: Vec<String>,
         },
         /// `offsets[i]` = bytes of entry `i` the receiver already holds.
         Answer {
