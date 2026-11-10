@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use crossdrop_proto::ipc::DeviceInfo;
 use crossdrop_sdk::{Client, Paths};
 use interdesk::layout::{Layout, Side};
 use interdesk::{layout_path, platform, runtime};
@@ -65,14 +66,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Add { device, side } => {
             let devices = Client::connect(paths.clone()).await?.devices().await?;
-            let known = devices.iter().find(|d| {
-                d.paired
-                    && (d.name.eq_ignore_ascii_case(&device)
-                        || d.id.replace('-', "").starts_with(&device.replace('-', "").to_uppercase()))
-            });
-            let Some(found) = known else {
-                bail!("{device} is not a paired device; pair it first with `crossdrop pair {device}`");
-            };
+            let found = find_paired(&devices, &device)?;
             let mut layout = Layout::load(&file)?;
             layout.set(&found.name, side);
             layout.save(&file)?;
@@ -98,4 +92,50 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The paired device named `query`, or whose id starts with it (at least
+/// four characters, dashes optional), as `crossdrop` itself resolves them.
+fn find_paired<'a>(devices: &'a [DeviceInfo], query: &str) -> Result<&'a DeviceInfo> {
+    let prefix: String = query.chars().filter(|c| *c != '-').collect::<String>().to_uppercase();
+    let matches: Vec<&DeviceInfo> = devices
+        .iter()
+        .filter(|d| d.paired)
+        .filter(|d| {
+            d.name.eq_ignore_ascii_case(query) || (prefix.len() >= 4 && d.id.replace('-', "").starts_with(&prefix))
+        })
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one),
+        [] => bail!("{query:?} is not a paired device; pair it first with `crossdrop pair {query}`"),
+        _ => bail!("{query:?} matches several paired devices; use more of its id"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(name: &str, id: &str) -> DeviceInfo {
+        DeviceInfo {
+            id: id.into(),
+            name: name.into(),
+            addrs: vec![],
+            paired: true,
+            online: true,
+            permissions: vec![],
+            auto_accept: false,
+            clipboard_send: false,
+        }
+    }
+
+    #[test]
+    fn devices_are_found_by_name_or_a_long_enough_id_prefix() {
+        let devices = [device("bravo", "ABCD-EFGH-1111"), device("charlie", "ABCD-XYZW-2222")];
+        assert_eq!(find_paired(&devices, "Bravo").unwrap().name, "bravo");
+        assert_eq!(find_paired(&devices, "abcd-x").unwrap().name, "charlie");
+        assert!(find_paired(&devices, "").is_err(), "an empty name must not pick the first device");
+        assert!(find_paired(&devices, "ab").is_err(), "too short to be an id prefix");
+        assert!(find_paired(&devices, "ABCD").unwrap_err().to_string().contains("several"));
+    }
 }
