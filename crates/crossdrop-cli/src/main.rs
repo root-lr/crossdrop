@@ -1,6 +1,6 @@
 //! `crossdrop` command-line interface.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -296,6 +296,7 @@ async fn run(cli: Cli) -> Result<()> {
             let mut stream = connect().await?.open_channel(&to, "crossdrop/files").await?;
             let started = Instant::now();
             let mut last = Instant::now();
+            let tty = std::io::stderr().is_terminal();
             let mut on_event = |event: SendEvent<'_>| match event {
                 SendEvent::Waiting { files, bytes } => {
                     eprintln!("Offering {files} file(s), {} to {to}…", human(bytes));
@@ -306,12 +307,20 @@ async fn run(cli: Cli) -> Result<()> {
                     }
                 }
                 SendEvent::Progress { path, done, total } => {
-                    if done == total || last.elapsed().as_millis() > 100 {
+                    // A terminal gets one line redrawn in place; a log or a
+                    // pipe gets plain lines, a few seconds apart.
+                    let every = if tty { 100 } else { 5000 };
+                    if done == total || last.elapsed().as_millis() > every {
                         last = Instant::now();
                         let pct = (done * 100).checked_div(total).unwrap_or(100);
-                        eprint!("\r\x1b[K{pct:>3}%  {} / {}  {path}", human(done), human(total));
-                        if done == total {
-                            eprintln!();
+                        let line = format!("{pct:>3}%  {} / {}  {path}", human(done), human(total));
+                        if tty {
+                            eprint!("\r\x1b[K{line}");
+                            if done == total {
+                                eprintln!();
+                            }
+                        } else {
+                            eprintln!("{line}");
                         }
                     }
                 }
