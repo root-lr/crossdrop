@@ -6,7 +6,7 @@ use anyhow::{bail, Result};
 use crossdrop_daemon::Options;
 
 const USAGE: &str =
-    "usage: crossdropd [--home DIR] [--name NAME] [--port PORT] [--no-mdns] [--no-clipboard] [--download-dir DIR]";
+    "usage: crossdropd [--home DIR] [--name NAME] [--port PORT] [--no-mdns] [--no-clipboard] [--download-dir DIR] [--desktop-dir DIR]";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
             "--no-mdns" => opts.mdns = Some(false),
             "--no-clipboard" => opts.clipboard_sync = Some(false),
             "--download-dir" => opts.download_dir = Some(PathBuf::from(value("--download-dir")?)),
+            "--desktop-dir" => opts.desktop_dir = Some(PathBuf::from(value("--desktop-dir")?)),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());

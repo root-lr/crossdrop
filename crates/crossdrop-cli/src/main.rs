@@ -40,6 +40,9 @@ enum Command {
         /// Where received files are stored.
         #[arg(long, value_name = "DIR")]
         download_dir: Option<PathBuf>,
+        /// Where files dropped from a neighbouring screen land (default: the desktop).
+        #[arg(long, value_name = "DIR")]
+        desktop_dir: Option<PathBuf>,
     },
     /// Show this device's id, name and port.
     Status,
@@ -158,7 +161,7 @@ async fn run(cli: Cli) -> Result<()> {
     let connect = || Client::connect(paths.clone());
 
     match cli.command {
-        Command::Daemon { name, port, no_mdns, no_clipboard, download_dir } => {
+        Command::Daemon { name, port, no_mdns, no_clipboard, download_dir, desktop_dir } => {
             let filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
             tracing_subscriber::fmt().with_env_filter(filter).init();
@@ -169,7 +172,7 @@ async fn run(cli: Cli) -> Result<()> {
                 mdns: no_mdns.then_some(false),
                 download_dir,
                 clipboard_sync: no_clipboard.then_some(false),
-                desktop_dir: None,
+                desktop_dir,
             })
             .await?;
         }
