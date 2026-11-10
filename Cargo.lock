@@ -373,6 +373,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "blake3",
+ "clap",
  "clipboard-win",
  "crossdrop-core",
  "crossdrop-proto",

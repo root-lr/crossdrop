@@ -2,39 +2,53 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
+use clap::Parser;
 use crossdrop_daemon::Options;
 
-const USAGE: &str =
-    "usage: crossdropd [--home DIR] [--name NAME] [--port PORT] [--no-mdns] [--no-clipboard] [--download-dir DIR] [--desktop-dir DIR]";
+/// The crossdrop daemon: keeps this device's identity and connections, and
+/// serves the CLI, the desktop app and extensions. Settings not given here
+/// come from config.toml in the data directory.
+#[derive(Parser)]
+#[command(name = "crossdropd", version)]
+struct Args {
+    /// Data directory (default: $CROSSDROP_HOME or the OS config directory).
+    #[arg(long, value_name = "DIR")]
+    home: Option<PathBuf>,
+    /// Name shown to other devices.
+    #[arg(long)]
+    name: Option<String>,
+    /// UDP port (0 = random).
+    #[arg(long)]
+    port: Option<u16>,
+    /// Do not announce or discover devices with mDNS.
+    #[arg(long)]
+    no_mdns: bool,
+    /// Do not watch or set the system clipboard (`crossdrop clip` still works).
+    #[arg(long)]
+    no_clipboard: bool,
+    /// Where received files are stored.
+    #[arg(long, value_name = "DIR")]
+    download_dir: Option<PathBuf>,
+    /// Where files dropped from a neighbouring screen land (default: the desktop).
+    #[arg(long, value_name = "DIR")]
+    desktop_dir: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
     tracing_subscriber_init();
-    let mut opts = Options::default();
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        let mut value = |flag: &str| args.next().ok_or_else(|| anyhow::anyhow!("{flag} needs a value"));
-        match arg.as_str() {
-            "--home" => opts.home = Some(PathBuf::from(value("--home")?)),
-            "--name" => opts.name = Some(value("--name")?),
-            "--port" => opts.port = Some(value("--port")?.parse()?),
-            "--no-mdns" => opts.mdns = Some(false),
-            "--no-clipboard" => opts.clipboard_sync = Some(false),
-            "--download-dir" => opts.download_dir = Some(PathBuf::from(value("--download-dir")?)),
-            "--desktop-dir" => opts.desktop_dir = Some(PathBuf::from(value("--desktop-dir")?)),
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return Ok(());
-            }
-            "-V" | "--version" => {
-                println!("crossdropd {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            other => bail!("unknown argument {other}\n{USAGE}"),
-        }
-    }
-    crossdrop_daemon::run(opts).await
+    crossdrop_daemon::run(Options {
+        home: args.home,
+        name: args.name,
+        port: args.port,
+        mdns: args.no_mdns.then_some(false),
+        download_dir: args.download_dir,
+        clipboard_sync: args.no_clipboard.then_some(false),
+        desktop_dir: args.desktop_dir,
+    })
+    .await
 }
 
 fn tracing_subscriber_init() {
