@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["kvm", "mouse", "keyboard", "crossdrop", "multi-monitor"]
+categories = ["command-line-utilities", "os"]
 
 [dependencies]
 anyhow = "1.0.104"
