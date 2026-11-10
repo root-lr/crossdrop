@@ -1,7 +1,7 @@
 //! Local API served to the CLI, the app and extensions.
 //!
-//! Unix socket (mode 0600 inside a 0700 directory) on Unix, named pipe on
-//! Windows. Each connection is one of three kinds, decided by its first
+//! Unix socket (mode 0600 inside a 0700 directory) on Unix, named pipe
+//! open to this user and SYSTEM only on Windows. Each connection is one of three kinds, decided by its first
 //! request: request/response, `Register` (event stream), or `Attach` (raw
 //! bytes bridged to a QUIC channel).
 
@@ -164,21 +164,42 @@ mod windows {
     pub(crate) struct Listener {
         first: NamedPipeServer,
         path: PathBuf,
+        security: Option<security::Descriptor>,
+    }
+
+    /// Creates one instance of the pipe, reachable only by this user (and
+    /// SYSTEM) when `security` is set. The default descriptor of a named
+    /// pipe also lets Everyone and anonymous users open it for reading.
+    fn create(
+        options: &mut ServerOptions,
+        path: &std::path::Path,
+        security: Option<&security::Descriptor>,
+    ) -> std::io::Result<NamedPipeServer> {
+        options.reject_remote_clients(true);
+        match security {
+            // SAFETY: the attributes point to a valid descriptor that outlives the call.
+            Some(sd) => unsafe { options.create_with_security_attributes_raw(path, sd.attributes()) },
+            None => options.create(path),
+        }
     }
 
     pub(crate) fn bind(paths: &Paths) -> Result<Listener> {
         let path = paths.ipc_endpoint();
-        let first = ServerOptions::new()
-            .first_pipe_instance(true)
-            .reject_remote_clients(true)
-            .create(&path)
+        let security = match security::Descriptor::current_user_only() {
+            Ok(sd) => Some(sd),
+            Err(e) => {
+                tracing::warn!("cannot restrict the daemon's pipe to this user: {e}");
+                None
+            }
+        };
+        let first = create(ServerOptions::new().first_pipe_instance(true), &path, security.as_ref())
             .with_context(|| format!("a crossdrop daemon may already be running ({})", path.display()))?;
-        Ok(Listener { first, path })
+        Ok(Listener { first, path, security })
     }
 
     impl Listener {
         pub(crate) async fn serve(self, daemon: Arc<Daemon>) {
-            let new_instance = || ServerOptions::new().reject_remote_clients(true).create(&self.path);
+            let new_instance = || create(&mut ServerOptions::new(), &self.path, self.security.as_ref());
             let mut server = self.first;
             loop {
                 if let Err(e) = server.connect().await {
@@ -214,6 +235,99 @@ mod windows {
 
         pub(crate) fn path(&self) -> PathBuf {
             self.path.clone()
+        }
+    }
+
+    /// A security descriptor granting the pipe to the current user and SYSTEM.
+    mod security {
+        use std::ffi::c_void;
+        use std::io;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        pub(crate) struct Descriptor {
+            sd: PSECURITY_DESCRIPTOR,
+            attributes: SECURITY_ATTRIBUTES,
+        }
+
+        // SAFETY: the descriptor is immutable once built and freed only on drop.
+        unsafe impl Send for Descriptor {}
+        unsafe impl Sync for Descriptor {}
+
+        impl Descriptor {
+            /// `D:P(A;;GA;;;<user>)(A;;GA;;;SY)`: full access for this user and
+            /// SYSTEM, nobody else, not inherited.
+            pub(crate) fn current_user_only() -> io::Result<Self> {
+                let sid = current_user_sid()?;
+                let sddl: Vec<u16> = format!("D:P(A;;GA;;;{sid})(A;;GA;;;SY)").encode_utf16().chain(Some(0)).collect();
+                let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+                // SAFETY: `sddl` is NUL-terminated; `sd` receives a LocalAlloc'd descriptor.
+                let ok = unsafe {
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        sddl.as_ptr(),
+                        SDDL_REVISION_1,
+                        &mut sd,
+                        null_mut(),
+                    )
+                };
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let attributes = SECURITY_ATTRIBUTES {
+                    nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                    lpSecurityDescriptor: sd,
+                    bInheritHandle: 0,
+                };
+                Ok(Self { sd, attributes })
+            }
+
+            pub(crate) fn attributes(&self) -> *mut c_void {
+                &self.attributes as *const SECURITY_ATTRIBUTES as *mut c_void
+            }
+        }
+
+        impl Drop for Descriptor {
+            fn drop(&mut self) {
+                // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+                unsafe { LocalFree(self.sd) };
+            }
+        }
+
+        /// The SID of the user this process runs as, as a string (`S-1-5-21-…`).
+        fn current_user_sid() -> io::Result<String> {
+            // SAFETY: plain Win32 calls on handles and buffers owned here.
+            unsafe {
+                let mut token: HANDLE = null_mut();
+                if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut len = 0u32;
+                GetTokenInformation(token, TokenUser, null_mut(), 0, &mut len);
+                // u64s keep TOKEN_USER (which holds a pointer) aligned.
+                let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+                let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+                let err = io::Error::last_os_error();
+                CloseHandle(token);
+                if ok == 0 {
+                    return Err(err);
+                }
+                let user = &*(buf.as_ptr() as *const TOKEN_USER);
+                let mut text = null_mut();
+                if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let n = (0..).take_while(|&i| *text.add(i) != 0).count();
+                let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
+                LocalFree(text.cast());
+                Ok(sid)
+            }
         }
     }
 }
