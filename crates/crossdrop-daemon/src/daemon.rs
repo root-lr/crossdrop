@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_core::{
     open_channel, peer_id, sas, Channel, Connection, DeviceId, Discovered, Node, PendingChannel, Rejected,
+    CHANNEL_VERSION,
 };
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
@@ -173,6 +174,12 @@ impl Daemon {
 
     async fn handle_channel(self: Arc<Self>, peer: DeviceId, conn: Connection, pending: PendingChannel) -> Result<()> {
         let service = pending.header.service.clone();
+        let version = pending.header.version;
+        if version != CHANNEL_VERSION {
+            return pending
+                .reject(format!("channel version {version} is not supported (expected {CHANNEL_VERSION})"))
+                .await;
+        }
         if service == services::PAIR {
             return self.handle_incoming_pair(peer, conn, pending).await;
         }
@@ -1044,5 +1051,24 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_channel_version_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let node = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let addr = node.local_addr().unwrap();
+        let trust = TrustStore::load(&dir.path().join("trusted.toml")).unwrap();
+        tokio::spawn(Daemon::new(Config::default(), node, trust, None).accept_loop());
+
+        let peer = Node::bind(&Identity::generate().unwrap(), local).unwrap();
+        let (conn, _) = peer.connect(addr).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        let header =
+            crossdrop_proto::wire::OpenChannel { service: services::PAIR.into(), version: CHANNEL_VERSION + 1 };
+        write_frame(&mut send, &header).await.unwrap();
+        let reply: ChannelReply = read_frame(&mut recv).await.unwrap();
+        assert!(matches!(reply, ChannelReply::Rejected { reason } if reason.contains("version")));
     }
 }
