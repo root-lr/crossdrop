@@ -72,7 +72,7 @@ impl Layout {
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
         let header = "# interdesk: devices around this screen. side = left | right | top | bottom\n\n";
-        std::fs::write(path, format!("{header}{}", toml::to_string_pretty(self)?))?;
+        crossdrop_sdk::write_atomic(path, format!("{header}{}", toml::to_string_pretty(self)?).as_bytes())?;
         Ok(())
     }
 

@@ -34,8 +34,10 @@ use crossdrop_proto::{read_frame, write_frame};
 
 pub mod files;
 pub mod paths;
+pub mod signal;
 
-pub use paths::Paths;
+pub use paths::{write_atomic, Paths};
+pub use signal::shutdown_signal;
 
 #[cfg(unix)]
 pub type IpcStream = tokio::net::UnixStream;

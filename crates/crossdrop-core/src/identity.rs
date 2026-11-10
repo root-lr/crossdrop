@@ -83,8 +83,13 @@ impl Identity {
     /// Creates a fresh identity in memory.
     pub fn generate() -> Result<Self> {
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
+        Self::certify(&key)
+    }
+
+    /// A new self-signed certificate over `key`.
+    fn certify(key: &rcgen::KeyPair) -> Result<Self> {
         let params = rcgen::CertificateParams::new(vec!["crossdrop".to_string()])?;
-        let cert = params.self_signed(&key)?;
+        let cert = params.self_signed(key)?;
         Ok(Self::from_parts(cert.der().to_vec(), key.serialize_der()))
     }
 
@@ -94,19 +99,54 @@ impl Identity {
     }
 
     /// Loads the identity stored in `dir`, generating it on first run.
+    ///
+    /// The key is written before the certificate, and the certificate
+    /// defines the device id. So a key without a certificate is a first run
+    /// that was cut short (the id was never shown to anyone) and gets its
+    /// certificate now, while a certificate without its key is an error: the
+    /// identity is lost and must not be silently replaced.
     pub fn load_or_generate(dir: &Path) -> Result<Self> {
         let cert_path = dir.join(CERT_FILE);
         let key_path = dir.join(KEY_FILE);
-        if cert_path.exists() && key_path.exists() {
-            let cert = std::fs::read(&cert_path).context("reading certificate")?;
-            let key = std::fs::read(&key_path).context("reading private key")?;
-            return Ok(Self::from_parts(cert, key));
+        match (cert_path.exists(), key_path.exists()) {
+            (true, true) => {
+                let cert = std::fs::read(&cert_path).context("reading certificate")?;
+                let key = std::fs::read(&key_path).context("reading private key")?;
+                let identity = Self::from_parts(cert, key);
+                identity.check().with_context(|| {
+                    format!("{} and {} do not belong together", cert_path.display(), key_path.display())
+                })?;
+                Ok(identity)
+            }
+            (true, false) => bail!(
+                "{} is missing, so this device's identity is lost. Move {} away to start with a new \
+                 identity; paired devices will have to pair with it again",
+                key_path.display(),
+                cert_path.display()
+            ),
+            (false, true) => {
+                let key = std::fs::read(&key_path).context("reading private key")?;
+                let key = rcgen::KeyPair::try_from(key.as_slice()).context("invalid private key")?;
+                let identity = Self::certify(&key)?;
+                write_atomic(&cert_path, identity.cert.as_ref(), false)?;
+                Ok(identity)
+            }
+            (false, false) => {
+                std::fs::create_dir_all(dir)?;
+                let identity = Self::generate()?;
+                write_atomic(&key_path, &identity.key, true)?;
+                write_atomic(&cert_path, identity.cert.as_ref(), false)?;
+                Ok(identity)
+            }
         }
-        std::fs::create_dir_all(dir)?;
-        let identity = Self::generate()?;
-        std::fs::write(&cert_path, identity.cert.as_ref())?;
-        write_private(&key_path, &identity.key)?;
-        Ok(identity)
+    }
+
+    /// Fails unless the key parses and matches the certificate's public key,
+    /// which TLS would otherwise only notice at the first handshake.
+    fn check(&self) -> Result<()> {
+        let provider = rustls::crypto::ring::default_provider();
+        rustls::sign::CertifiedKey::from_der(vec![self.cert()], self.key(), &provider)?;
+        Ok(())
     }
 
     pub fn id(&self) -> DeviceId {
@@ -122,20 +162,28 @@ impl Identity {
     }
 }
 
-#[cfg(unix)]
-fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+/// Writes `data` to `path` through a synced temporary file and a rename, so
+/// that a crash leaves either the old file or the complete new one.
+/// `private`: readable by this user only (Unix).
+fn write_atomic(path: &Path, data: &[u8], private: bool) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    let tmp = path.with_extension("tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(if private { 0o600 } else { 0o644 });
+    }
+    // On Windows the data directory lives in the user's profile, which is
+    // already restricted to that user.
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut f = options.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
     f.write_all(data)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, data: &[u8]) -> Result<()> {
-    // The data directory lives in the user's profile, which Windows already
-    // restricts to that user.
-    std::fs::write(path, data)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -150,6 +198,50 @@ mod tests {
         assert_eq!(text.len(), 32 + 7);
         assert_eq!(text.parse::<DeviceId>().unwrap(), identity.id());
         assert_eq!(text.to_lowercase().replace('-', "").parse::<DeviceId>().unwrap(), identity.id());
+    }
+
+    #[test]
+    fn a_key_without_certificate_is_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Identity::load_or_generate(dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join(CERT_FILE)).unwrap();
+        let again = Identity::load_or_generate(dir.path()).unwrap();
+        assert_eq!(again.key, first.key, "the key must be kept");
+        assert!(dir.path().join(CERT_FILE).exists());
+        assert_eq!(Identity::load_or_generate(dir.path()).unwrap().id(), again.id());
+    }
+
+    #[test]
+    fn a_certificate_without_key_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        Identity::load_or_generate(dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join(KEY_FILE)).unwrap();
+        let err = Identity::load_or_generate(dir.path()).err().unwrap();
+        assert!(err.to_string().contains("identity is lost"), "{err}");
+        assert!(!dir.path().join(KEY_FILE).exists(), "nothing must be regenerated");
+    }
+
+    #[test]
+    fn a_key_from_another_identity_is_refused() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        Identity::load_or_generate(a.path()).unwrap();
+        Identity::load_or_generate(b.path()).unwrap();
+        std::fs::copy(b.path().join(KEY_FILE), a.path().join(KEY_FILE)).unwrap();
+        let err = Identity::load_or_generate(a.path()).err().unwrap();
+        assert!(format!("{err:#}").contains("do not belong together"), "{err:#}");
+
+        std::fs::write(a.path().join(KEY_FILE), b"garbage").unwrap();
+        assert!(Identity::load_or_generate(a.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_private_key_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        Identity::load_or_generate(dir.path()).unwrap();
+        let mode = std::fs::metadata(dir.path().join(KEY_FILE)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

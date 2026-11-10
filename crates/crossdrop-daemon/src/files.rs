@@ -73,7 +73,7 @@ struct Transfer {
 
 impl Transfer {
     fn save(&self) -> Result<()> {
-        std::fs::write(&self.journal_path, serde_json::to_vec(&self.journal)?)?;
+        crossdrop_sdk::write_atomic(&self.journal_path, &serde_json::to_vec(&self.journal)?)?;
         Ok(())
     }
 

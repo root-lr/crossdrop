@@ -57,6 +57,14 @@ impl Node {
     pub fn close(&self) {
         self.endpoint.close(0u32.into(), b"shutdown");
     }
+
+    /// Closes every connection and waits (at most `limit`) until the peers
+    /// were told, so that they see this device go at once instead of after
+    /// their idle timeout.
+    pub async fn close_gracefully(&self, limit: std::time::Duration) {
+        self.close();
+        let _ = tokio::time::timeout(limit, self.endpoint.wait_idle()).await;
+    }
 }
 
 /// Identity proved by the peer of an established connection.
@@ -219,5 +227,22 @@ mod tests {
         let (conn, _) = a.connect(b_addr).await.unwrap();
         let err = open_channel(&conn, "x").await.err().unwrap();
         assert!(err.to_string().contains("not paired"));
+    }
+
+    #[tokio::test]
+    async fn peers_see_a_graceful_close_at_once() {
+        let a = Node::bind(&Identity::generate().unwrap(), local()).unwrap();
+        let b = Node::bind(&Identity::generate().unwrap(), local()).unwrap();
+        let b_addr = b.local_addr().unwrap();
+        let accepted = tokio::spawn(async move {
+            let conn = b.accept().await.unwrap().await.unwrap();
+            (b, conn)
+        });
+        let (conn, _) = a.connect(b_addr).await.unwrap();
+        let (b, _server_side) = accepted.await.unwrap();
+
+        b.close_gracefully(std::time::Duration::from_secs(2)).await;
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(1), conn.closed()).await;
+        assert!(closed.is_ok(), "the peer did not see the close");
     }
 }
