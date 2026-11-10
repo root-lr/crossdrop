@@ -69,7 +69,7 @@ cursor reaches the right edge
 - If the link drops while the cursor is away, the source takes control back
   and the target releases everything: no stuck key.
 
-## Limits (v0.3)
+## Limits
 
 - Neighbours are direct only (alpha → bravo; bravo → charlie is configured on bravo).
 - A desktop made of several monitors is treated as one rectangle (their

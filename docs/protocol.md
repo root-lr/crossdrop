@@ -1,6 +1,7 @@
 # crossdrop protocol, version 1
 
-Status: draft, implemented by crossdrop v0.2. Breaking changes bump the ALPN.
+Status: draft; describes what this repository implements. Breaking changes
+bump the ALPN.
 
 ## Transport
 
