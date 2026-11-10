@@ -169,12 +169,7 @@ async fn link_once(paths: &Paths, idx: usize, device: &str, links: &UnboundedSen
     };
     let (tx, mut rx) = unbounded_channel::<Msg>();
     links.send(Link::Up { idx, width, height, tx })?;
-    let writer = async {
-        while let Some(msg) = rx.recv().await {
-            write_frame(&mut wr, &msg).await?;
-        }
-        anyhow::Ok(())
-    };
+    let writer = forward(&mut rx, &mut wr);
     let reader = async {
         // The target sends nothing more today; a read result means it is gone.
         let _ = read_frame::<_, Msg>(&mut rd).await;
@@ -183,5 +178,75 @@ async fn link_once(paths: &Paths, idx: usize, device: &str, links: &UnboundedSen
     tokio::select! {
         r = writer => r,
         r = reader => r,
+    }
+}
+
+/// Writes the source's messages to the target. When the link falls behind,
+/// moves waiting in the queue are merged into the last one: positions are
+/// absolute, so the cursor goes straight to where the mouse is instead of
+/// replaying its path late. Everything else keeps its order.
+async fn forward<W>(rx: &mut UnboundedReceiver<Msg>, wr: &mut W) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut next = None;
+    loop {
+        let mut msg = match next.take() {
+            Some(msg) => msg,
+            None => match rx.recv().await {
+                Some(msg) => msg,
+                None => return Ok(()),
+            },
+        };
+        if matches!(msg, Msg::Move { .. }) {
+            while let Ok(queued) = rx.try_recv() {
+                if matches!(queued, Msg::Move { .. }) {
+                    msg = queued;
+                } else {
+                    next = Some(queued);
+                    break;
+                }
+            }
+        }
+        write_frame(wr, &msg).await?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::Button;
+
+    #[tokio::test]
+    async fn queued_moves_are_merged_but_order_is_kept() {
+        let (tx, mut rx) = unbounded_channel();
+        for msg in [
+            Msg::Move { x: 1, y: 1 },
+            Msg::Move { x: 2, y: 2 },
+            Msg::Move { x: 3, y: 3 },
+            Msg::Button { button: Button::Left, down: true },
+            Msg::Move { x: 4, y: 4 },
+            Msg::Move { x: 5, y: 5 },
+            Msg::Key { hid: 4, down: true },
+        ] {
+            tx.send(msg).unwrap();
+        }
+        drop(tx);
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        forward(&mut rx, &mut a).await.unwrap();
+        drop(a);
+        let mut got = Vec::new();
+        while let Ok(msg) = read_frame::<_, Msg>(&mut b).await {
+            got.push(msg);
+        }
+        assert_eq!(
+            got,
+            [
+                Msg::Move { x: 3, y: 3 },
+                Msg::Button { button: Button::Left, down: true },
+                Msg::Move { x: 5, y: 5 },
+                Msg::Key { hid: 4, down: true },
+            ]
+        );
     }
 }
