@@ -90,6 +90,19 @@ async fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+/// The responder stores a pairing once the initiator has read its answer,
+/// a moment after `pair_confirm` returned: wait for it.
+async fn until_paired(c: &mut Client, peer: &Handle) {
+    let id = peer.id.to_string();
+    for _ in 0..250 {
+        if c.devices().await.unwrap().iter().any(|d| d.id == id && d.paired) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the pairing was never stored");
+}
+
 fn launch(h: &Handle, layout: Layout, fake: Arc<Fake>) -> (UnboundedSender<Input>, tokio::sync::oneshot::Sender<()>) {
     let (tx, rx) = unbounded_channel();
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -123,6 +136,7 @@ async fn mouse_crosses_to_the_neighbour_and_back() {
     };
     cb.pair_answer(&req.pair_id, true).await.unwrap();
     assert!(confirm.await.unwrap().0);
+    until_paired(&mut cb, &a).await;
     // bravo lets alpha drive it.
     cb.set_permission("alpha", "interdesk/input", true).await.unwrap();
 
@@ -185,6 +199,7 @@ async fn without_permission_the_edge_stays_closed() {
     };
     cb.pair_answer(&req.pair_id, true).await.unwrap();
     confirm.await.unwrap();
+    until_paired(&mut cb, &a).await;
 
     let fa = Fake::new(1920, 1080);
     let fb = Fake::new(1920, 1080);
