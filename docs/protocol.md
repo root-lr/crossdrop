@@ -134,6 +134,12 @@ send its own copies to X. Each daemon polls the system clipboard every
 Headless devices without a system clipboard still accept and expose the last
 text through `crossdrop clip get`.
 
+Copies that their app marks as sensitive are never sent: on macOS the
+`org.nspasteboard.ConcealedType` / `TransientType` pasteboard types (set by
+1Password, Bitwarden, KeePassXC…), on Windows the
+`ExcludeClipboardContentFromMonitorProcessing` and `Clipboard Viewer Ignore`
+formats. Not detected yet on Linux.
+
 ## Reserved service names
 
 | name                  | owner                    |
