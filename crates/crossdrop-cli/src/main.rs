@@ -129,8 +129,9 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(9)]
 }
 
+/// A size in binary units (1 KiB = 1024 B), named as such.
 fn human(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = bytes as f64;
     let mut unit = 0;
     while v >= 1024.0 && unit < UNITS.len() - 1 {
@@ -409,5 +410,18 @@ async fn pick_request(client: &mut Client, id: Option<String>) -> Result<Pending
         0 => bail!("nothing waiting with that id; see `crossdrop requests`"),
         1 => Ok(all.remove(0).1),
         _ => bail!("several requests are waiting; pass an id from `crossdrop requests`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_use_binary_unit_names() {
+        assert_eq!(human(512), "512 B");
+        assert_eq!(human(1536), "1.5 KiB");
+        assert_eq!(human(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(human(3 << 30), "3.0 GiB");
     }
 }
