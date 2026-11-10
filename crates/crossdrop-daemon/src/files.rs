@@ -269,11 +269,28 @@ fn sanitize_component(c: &str, windows: bool) -> String {
         .trim()
         .trim_end_matches('.')
         .to_string();
-    if windows && is_windows_device_name(&name) {
-        format!("_{name}")
-    } else {
-        name
+    let name = if windows && is_windows_device_name(&name) { format!("_{name}") } else { name };
+    shorten(name)
+}
+
+/// Longest component kept, in bytes. File systems allow 255; the margin
+/// leaves room for the " (1)" a name gets when it is already taken.
+const MAX_COMPONENT_BYTES: usize = 240;
+
+/// Cuts a name too long for the file system, keeping its extension.
+fn shorten(name: String) -> String {
+    if name.len() <= MAX_COMPONENT_BYTES {
+        return name;
     }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 16 => (stem, format!(".{ext}")),
+        _ => (name.as_str(), String::new()),
+    };
+    let mut cut = MAX_COMPONENT_BYTES - ext.len();
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{ext}", stem[..cut].trim_end())
 }
 
 /// `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` (and the
@@ -335,6 +352,17 @@ mod tests {
         }
         // Elsewhere these are ordinary names (Linux has drivers/…/aux.c).
         assert_eq!(sanitize_component("aux.c", false), "aux.c");
+    }
+
+    #[test]
+    fn long_names_are_cut_keeping_the_extension() {
+        let long = format!("{}.jpeg", "é".repeat(200));
+        let short = sanitize_component(&long, false);
+        assert!(short.len() <= MAX_COMPONENT_BYTES, "{} bytes", short.len());
+        assert!(short.ends_with("é.jpeg"), "{short}");
+        let no_ext = sanitize_component(&"x".repeat(300), false);
+        assert_eq!(no_ext.len(), MAX_COMPONENT_BYTES);
+        assert_eq!(sanitize_component("photo.jpeg", false), "photo.jpeg");
     }
 
     #[test]
