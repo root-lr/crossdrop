@@ -178,14 +178,25 @@ mod windows {
 
     impl Listener {
         pub(crate) async fn serve(self, daemon: Arc<Daemon>) {
+            let new_instance = || ServerOptions::new().reject_remote_clients(true).create(&self.path);
             let mut server = self.first;
             loop {
                 if let Err(e) = server.connect().await {
+                    // This instance may be unusable: replace it rather than
+                    // retrying it at once, which could spin.
                     tracing::warn!("ipc accept failed: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    server = match new_instance() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!("cannot create named pipe: {e}");
+                            return;
+                        }
+                    };
                     continue;
                 }
                 let client = server;
-                server = match ServerOptions::new().reject_remote_clients(true).create(&self.path) {
+                server = match new_instance() {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!("cannot create named pipe: {e}");
