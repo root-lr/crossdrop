@@ -349,3 +349,27 @@ async fn abandoned_partial_files_are_removed_at_start() {
     assert!(partial.join("fresh.part").exists(), "a recent one may still be resumed");
     a.shutdown();
 }
+
+#[tokio::test]
+async fn a_desktop_drop_without_the_input_permission_waits_for_the_user() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = daemon(dir.path(), "alpha").await;
+    let b = daemon(dir.path(), "bravo").await;
+    pair(&a, &b).await;
+    let file = dir.path().join("note.txt");
+    std::fs::write(&file, "hi").unwrap();
+
+    // bravo has not allowed alpha to drive it: asking for the desktop must not
+    // skip bravo's consent, nor put anything there.
+    let answer = tokio::spawn(answer_next_offer(client(&b).await, true));
+    let mut stream = client(&a).await.open_channel("bravo", "crossdrop/files").await.unwrap();
+    let opts = crossdrop_sdk::files::SendOptions { to_desktop: true };
+    let mut events = |_: SendEvent<'_>| {};
+    crossdrop_sdk::files::send_files_with(&mut stream, std::slice::from_ref(&file), opts, &mut events).await.unwrap();
+    let offer = answer.await.unwrap();
+    assert_eq!(offer.files, 1, "bravo was asked");
+    assert_eq!(std::fs::read_to_string(dir.path().join("bravo/downloads/note.txt")).unwrap(), "hi");
+    assert!(!dir.path().join("bravo/desktop/note.txt").exists(), "nothing lands on the desktop");
+    a.shutdown();
+    b.shutdown();
+}
