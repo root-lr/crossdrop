@@ -112,7 +112,11 @@ impl Identity {
             (true, true) => {
                 let cert = std::fs::read(&cert_path).context("reading certificate")?;
                 let key = std::fs::read(&key_path).context("reading private key")?;
-                Ok(Self::from_parts(cert, key))
+                let identity = Self::from_parts(cert, key);
+                identity.check().with_context(|| {
+                    format!("{} and {} do not belong together", cert_path.display(), key_path.display())
+                })?;
+                Ok(identity)
             }
             (true, false) => bail!(
                 "{} is missing, so this device's identity is lost. Move {} away to start with a new \
@@ -135,6 +139,14 @@ impl Identity {
                 Ok(identity)
             }
         }
+    }
+
+    /// Fails unless the key parses and matches the certificate's public key,
+    /// which TLS would otherwise only notice at the first handshake.
+    fn check(&self) -> Result<()> {
+        let provider = rustls::crypto::ring::default_provider();
+        rustls::sign::CertifiedKey::from_der(vec![self.cert()], self.key(), &provider)?;
+        Ok(())
     }
 
     pub fn id(&self) -> DeviceId {
@@ -207,6 +219,19 @@ mod tests {
         let err = Identity::load_or_generate(dir.path()).err().unwrap();
         assert!(err.to_string().contains("identity is lost"), "{err}");
         assert!(!dir.path().join(KEY_FILE).exists(), "nothing must be regenerated");
+    }
+
+    #[test]
+    fn a_key_from_another_identity_is_refused() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        Identity::load_or_generate(a.path()).unwrap();
+        Identity::load_or_generate(b.path()).unwrap();
+        std::fs::copy(b.path().join(KEY_FILE), a.path().join(KEY_FILE)).unwrap();
+        let err = Identity::load_or_generate(a.path()).err().unwrap();
+        assert!(format!("{err:#}").contains("do not belong together"), "{err:#}");
+
+        std::fs::write(a.path().join(KEY_FILE), b"garbage").unwrap();
+        assert!(Identity::load_or_generate(a.path()).is_err());
     }
 
     #[cfg(unix)]
