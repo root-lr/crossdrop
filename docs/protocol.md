@@ -108,6 +108,9 @@ Any paired device may open this service, whatever its permissions.
   receiver's desktop. It is honoured, without asking, only when the sender
   is allowed `interdesk/input` on the receiver; otherwise the offer is
   handled like any other.
+- Before answering, the receiver checks that the bytes still to come fit on
+  its disk with 64 MiB to spare; if not, it replies
+  `{"type":"error","message":"not enough disk space: …"}` instead.
 - The receiver may wait for its user (`crossdrop accept`, up to 5 minutes)
   unless the sender's device is set to auto-accept. A refusal is
   `{"type":"answer","accepted":false,"offsets":[]}`.
