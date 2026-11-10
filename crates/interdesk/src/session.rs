@@ -184,6 +184,17 @@ impl Session {
     /// The crossing just decided could not happen (the platform failed to
     /// capture input): back to local, before anything was sent to the
     /// neighbour. The edge stays closed until the cursor moves away from it.
+    /// Neighbour `idx` is driven by another computer: come back as if the
+    /// link had dropped, and keep that edge closed until the cursor leaves it.
+    pub fn refused(&mut self, idx: usize) -> Vec<Action> {
+        if self.remote() != Some(idx) {
+            return vec![];
+        }
+        let actions = self.come_back(None);
+        self.edge_blocked = true;
+        actions
+    }
+
     pub fn cancel_crossing(&mut self) {
         if matches!(self.state, State::Remote { .. }) {
             self.state = State::Local;
@@ -285,6 +296,17 @@ mod tests {
         s.on_input(Input::Delta { dx: 2000, dy: 600 }); // at (2000, 1320) on 2560×1440
         s.connected(0, 1280, 720);
         assert_eq!(s.on_input(Input::Delta { dx: 1, dy: 0 }), vec![Action::Send(0, Msg::Move { x: 1279, y: 719 })]);
+    }
+
+    #[test]
+    fn a_busy_neighbour_sends_the_cursor_back() {
+        let mut s = session();
+        s.on_input(Input::Pos { x: 1919, y: 540, pressed: false });
+        let a = s.refused(0);
+        assert_eq!(a, vec![Action::Send(0, Msg::Leave), Action::Grab(false), Action::Warp(960, 540)]);
+        assert!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: false }).is_empty(), "edge closed");
+        s.on_input(Input::Pos { x: 1000, y: 540, pressed: false });
+        assert_eq!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: false })[0], Action::Grab(true));
     }
 
     #[test]

@@ -30,6 +30,10 @@ enum Link {
         width: u32,
         height: u32,
     },
+    /// The neighbour is driven by another computer right now.
+    Busy {
+        idx: usize,
+    },
     Down {
         idx: usize,
     },
@@ -80,6 +84,10 @@ pub async fn run(
                     session.connected(idx, width, height);
                     vec![]
                 }
+                Link::Busy { idx } => {
+                    info!(device = %layout.neighbors[idx].device, "neighbour is driven by another computer");
+                    session.refused(idx)
+                }
                 Link::Down { idx } => {
                     writers[idx] = None;
                     session.disconnected(idx)
@@ -128,13 +136,15 @@ async fn serve_targets(paths: Paths, platform: Arc<dyn Platform>) {
             Ok(client) => match client.register(SERVICE).await {
                 Ok(mut reg) => {
                     info!("ready to be controlled (service {SERVICE})");
+                    let control = Arc::new(target::Control::default());
                     while let Ok(Some(incoming)) = reg.next().await {
                         let platform = platform.clone();
+                        let control = control.clone();
                         let from = device_name(&paths, &incoming.device).await;
                         tokio::spawn(async move {
                             match incoming.accept().await {
                                 Ok(stream) => {
-                                    if let Err(e) = target::serve(stream, platform, &from).await {
+                                    if let Err(e) = target::serve(stream, platform, control, &from).await {
                                         debug!("source {from}: {e:#}");
                                     }
                                 }
@@ -198,8 +208,10 @@ async fn link_once(paths: &Paths, idx: usize, device: &str, links: &UnboundedSen
     let reader = async {
         // The target only reports size changes; anything else ends the link.
         while let Ok(msg) = read_frame::<_, Msg>(&mut rd).await {
-            if let Msg::Screen { width, height } = msg {
-                links.send(Link::Resized { idx, width, height })?;
+            match msg {
+                Msg::Screen { width, height } => links.send(Link::Resized { idx, width, height })?,
+                Msg::Busy => links.send(Link::Busy { idx })?,
+                _ => {}
             }
         }
         anyhow::Ok(())
