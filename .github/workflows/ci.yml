@@ -35,6 +35,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
 
+  # The oldest Rust the crates declare (rust-version in Cargo.toml).
+  msrv:
+    name: minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
   x11:
     name: interdesk on a real X server
     runs-on: ubuntu-latest
