@@ -2,22 +2,22 @@
 class Crossdrop < Formula
   desc "Share files, clipboard, mouse and keyboard across your computers"
   homepage "https://github.com/root-lr/crossdrop"
-  version "0.4.0"
+  version "0.4.1"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
-    url "https://github.com/root-lr/crossdrop/releases/download/v0.4.0/crossdrop-cli-v0.4.0-universal-apple-darwin.tar.gz"
-    sha256 "a85b1f8f500ee6955c2abc2148c300542e5a89ec06eba93aea0a6a3df40cf2d7"
+    url "https://github.com/root-lr/crossdrop/releases/download/v0.4.1/crossdrop-cli-v0.4.1-universal-apple-darwin.tar.gz"
+    sha256 "fda12de020d2b563627d35f7a352aefb2f6b22be514910426f0df5a92393de64"
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/root-lr/crossdrop/releases/download/v0.4.0/crossdrop-cli-v0.4.0-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "562a01f9b5b758fb4ef6eed714c4cc7959caa686c5660676ef895e742a1a9da3"
+      url "https://github.com/root-lr/crossdrop/releases/download/v0.4.1/crossdrop-cli-v0.4.1-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "fb8a41c1e599c7e2d930ec610a25596233f73a51f3c27e8cf458eabc8c17907e"
     end
     on_arm do
-      url "https://github.com/root-lr/crossdrop/releases/download/v0.4.0/crossdrop-cli-v0.4.0-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "410be1e0617799ee2d3f66cbe098573b59356fbe0cc2fcdd1824bc44f3921728"
+      url "https://github.com/root-lr/crossdrop/releases/download/v0.4.1/crossdrop-cli-v0.4.1-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "df3a7865f504648031d2e4c11a52bc265d2e1e7c03db322b2aa6bf5e616fc633"
     end
   end
 
