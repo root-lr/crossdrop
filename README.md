@@ -52,7 +52,7 @@ Support/crossdrop` on macOS, `~/.config/crossdrop` on Linux,
 `%APPDATA%\crossdrop` on Windows), including the daemon it runs.
 
 Install it from a [release](https://github.com/root-lr/crossdrop/releases) or
-with `brew install --cask crossdrop-app` (see [Install](#install)). To build it:
+with `brew install --cask root-lr/crossdrop/crossdrop-app` (see [Install](#install)). To build it:
 
 ```sh
 cd apps/desktop && npm ci && npm run tauri build
@@ -63,11 +63,9 @@ cd apps/desktop && npm ci && npm run tauri build
 **macOS and Linux, with Homebrew:**
 
 ```sh
-brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
-brew trust root-lr/crossdrop        # Homebrew asks to trust third-party taps
-brew install crossdrop              # crossdrop, crossdropd, interdesk
-brew services start crossdrop       # keep the daemon running
-brew install --cask crossdrop-app   # the desktop app (macOS, Apple silicon and Intel)
+brew install root-lr/crossdrop/crossdrop              # crossdrop, crossdropd, interdesk
+brew services start crossdrop                         # keep the daemon running
+brew install --cask root-lr/crossdrop/crossdrop-app   # the desktop app (macOS, Apple silicon and Intel)
 ```
 
 **Windows, macOS, Linux:** installers and command-line archives are attached to

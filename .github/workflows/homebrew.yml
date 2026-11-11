@@ -1,34 +1,47 @@
 name: Homebrew
 
-# Updates Formula/crossdrop.rb and Casks/crossdrop-app.rb when a release is
-# published, so `brew upgrade` picks the new version up.
+# Updates Formula/crossdrop.rb and Casks/crossdrop-app.rb in the tap
+# (github.com/root-lr/homebrew-crossdrop) when a release is published, so
+# `brew upgrade` picks the new version up.
+#
+# HOMEBREW_TAP_TOKEN: a fine-grained token with "Contents: read and write"
+# on root-lr/homebrew-crossdrop.
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag, e.g. v0.4.0
+        description: Release tag, e.g. v0.4.1
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  TAP: ${{ github.repository_owner }}/homebrew-crossdrop
 
 jobs:
   update:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       TAG: ${{ inputs.version || github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
+      - name: Check the tap token
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error::The HOMEBREW_TAP_TOKEN secret is not set."
+            exit 1
+          fi
+      # releases/tags/<tag> only returns the published release, never a draft
+      # that happens to carry the same tag.
       - name: Download the release assets
         run: |
           mkdir assets
-          id=$(gh api "repos/${{ github.repository }}/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -1)
-          gh api "repos/${{ github.repository }}/releases/$id/assets" --jq '.[] | "\(.id) \(.name)"' |
+          gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq '.assets[] | "\(.id) \(.name)"' |
             while read -r asset name; do
               case "$name" in
                 crossdrop-cli-*.tar.gz | *_universal.dmg)
@@ -37,26 +50,27 @@ jobs:
               esac
             done
           ls -l assets
-      - run: packaging/homebrew/update.sh "$TAG" assets
-      - name: Commit
+      - run: git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP}.git" tap
+      - run: packaging/homebrew/update.sh "$TAG" assets tap
+      - name: Commit to the tap
+        working-directory: tap
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula Casks
           if git diff --cached --quiet; then echo "already up to date"; exit 0; fi
-          git commit -m "homebrew: crossdrop ${TAG#v}"
-          git push origin main
+          git commit -m "crossdrop ${TAG#v}"
+          git push origin HEAD
 
-  # Installs from the tap like a user would, on a clean Mac.
+  # Installs from the tap like a user would, on a clean Mac. A fully qualified
+  # name taps root-lr/homebrew-crossdrop and trusts the formula or cask on its
+  # own: no `brew tap` or `brew trust` to run first.
   check:
     needs: update
     runs-on: macos-latest
     steps:
-      - run: brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
-      # Homebrew refuses to load formulae from a third-party tap until it is trusted.
-      - run: brew trust root-lr/crossdrop
-      - run: brew install crossdrop
+      - run: brew install root-lr/crossdrop/crossdrop
       - run: brew test crossdrop
       - run: crossdrop --version && interdesk --version && crossdropd --version
-      - run: brew install --cask crossdrop-app
+      - run: brew install --cask root-lr/crossdrop/crossdrop-app
       - run: lipo -info /Applications/crossdrop.app/Contents/MacOS/crossdrop-desktop

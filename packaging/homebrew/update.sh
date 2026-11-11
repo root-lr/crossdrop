@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Writes Formula/crossdrop.rb and Casks/crossdrop-app.rb for a release.
+# Writes Formula/crossdrop.rb and Casks/crossdrop-app.rb for a release, into
+# a clone of the tap (github.com/root-lr/homebrew-crossdrop).
 #
-#   packaging/homebrew/update.sh v0.4.0 path/to/downloaded/assets
+#   packaging/homebrew/update.sh v0.4.1 path/to/downloaded/assets path/to/tap
 #
 # The asset folder must hold the release's
 #   crossdrop-cli-<tag>-universal-apple-darwin.tar.gz
@@ -12,9 +13,9 @@ set -euo pipefail
 
 tag="$1"
 assets="$2"
+tap="$3"
 version="${tag#v}"
 here="$(cd "$(dirname "$0")" && pwd)"
-root="$(cd "$here/../.." && pwd)"
 
 sha() {
   local f="$assets/$1"
@@ -35,7 +36,7 @@ render() {
       -e "s/@SHA_DMG@/$sha_dmg/g" "$1"
 }
 
-mkdir -p "$root/Formula" "$root/Casks"
-render "$here/crossdrop.rb.in" > "$root/Formula/crossdrop.rb"
-render "$here/crossdrop-app.rb.in" > "$root/Casks/crossdrop-app.rb"
+mkdir -p "$tap/Formula" "$tap/Casks"
+render "$here/crossdrop.rb.in" > "$tap/Formula/crossdrop.rb"
+render "$here/crossdrop-app.rb.in" > "$tap/Casks/crossdrop-app.rb"
 echo "Formula/crossdrop.rb and Casks/crossdrop-app.rb updated to $version"
