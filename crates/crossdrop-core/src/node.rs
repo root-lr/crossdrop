@@ -1,6 +1,6 @@
 //! QUIC endpoint and channels.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_proto::wire::{ChannelReply, OpenChannel};
@@ -23,8 +23,26 @@ pub struct Node {
 impl Node {
     /// Binds the endpoint on `addr` (use port 0 for a random port).
     pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Self> {
-        let mut endpoint = quinn::Endpoint::server(tls::server_config(identity)?, addr)
-            .with_context(|| format!("binding UDP {addr}"))?;
+        let socket = std::net::UdpSocket::bind(addr).with_context(|| format!("binding UDP {addr}"))?;
+        Self::with_socket(identity, socket)
+    }
+
+    /// Binds `port` on every IPv4 and IPv6 address, with one dual-stack
+    /// socket, or on IPv4 only when the system has no IPv6.
+    pub fn bind_any(identity: &Identity, port: u16) -> Result<Self> {
+        match dual_stack(port) {
+            Ok(socket) => Self::with_socket(identity, socket),
+            Err(e) => {
+                tracing::debug!("no IPv6 socket ({e}); listening on IPv4 only");
+                Self::bind(identity, SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))
+            }
+        }
+    }
+
+    fn with_socket(identity: &Identity, socket: std::net::UdpSocket) -> Result<Self> {
+        let runtime = quinn::default_runtime().context("no async runtime")?;
+        let server = Some(tls::server_config(identity)?);
+        let mut endpoint = quinn::Endpoint::new(quinn::EndpointConfig::default(), server, socket, runtime)?;
         endpoint.set_default_client_config(tls::client_config(identity)?);
         Ok(Self { endpoint, id: identity.id() })
     }
@@ -164,6 +182,22 @@ pub fn sas(conn: &Connection, a: DeviceId, b: DeviceId) -> Result<String> {
     Ok(format!("{:03} {:03}", n / 1000, n % 1000))
 }
 
+/// A UDP socket on `[::]:port` that also accepts IPv4 (as mapped
+/// addresses). Windows and some Linux setups default to IPv6 only.
+fn dual_stack(port: u16) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_only_v6(false)?;
+    socket.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+    Ok(socket.into())
+}
+
+/// `addr` as people write it: an IPv4 peer reached through the dual-stack
+/// socket shows up as `[::ffff:a.b.c.d]`, which is `a.b.c.d`.
+pub fn canonical(addr: SocketAddr) -> SocketAddr {
+    SocketAddr::new(addr.ip().to_canonical(), addr.port())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +245,40 @@ mod tests {
         assert_eq!(seen, ia.id());
         assert_eq!(code, server_code);
         assert_eq!(code.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn a_dual_stack_node_is_reached_over_ipv4_and_ipv6() {
+        let server = Node::bind_any(&Identity::generate().unwrap(), 0).unwrap();
+        let port = server.local_addr().unwrap().port();
+        let accepting = server.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = accepting.accept().await {
+                tokio::spawn(async move {
+                    if let Ok(conn) = incoming.await {
+                        conn.closed().await;
+                    }
+                });
+            }
+        });
+        let v4 = Node::bind(&Identity::generate().unwrap(), local()).unwrap();
+        let (conn, peer) = v4.connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).await.unwrap();
+        assert_eq!(peer, server.id());
+        conn.close(0u32.into(), b"done");
+        // Skipped where the machine has no IPv6 loopback.
+        if let Ok(v6) = Node::bind(&Identity::generate().unwrap(), "[::1]:0".parse().unwrap()) {
+            let (conn, peer) = v6.connect(SocketAddr::from((Ipv6Addr::LOCALHOST, port))).await.unwrap();
+            assert_eq!(peer, server.id());
+            conn.close(0u32.into(), b"done");
+        }
+    }
+
+    #[test]
+    fn mapped_ipv4_addresses_are_shown_as_ipv4() {
+        let mapped: SocketAddr = "[::ffff:192.168.1.4]:9".parse().unwrap();
+        assert_eq!(canonical(mapped).to_string(), "192.168.1.4:9");
+        let v6: SocketAddr = "[2001:db8::5]:9".parse().unwrap();
+        assert_eq!(canonical(v6), v6);
     }
 
     #[tokio::test]

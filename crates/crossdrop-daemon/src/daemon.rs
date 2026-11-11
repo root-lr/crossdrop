@@ -148,9 +148,9 @@ impl Daemon {
 
     /// Remembers `conn` and dispatches the channels the peer opens on it.
     async fn serve_connection(self: Arc<Self>, peer: DeviceId, conn: Connection) {
-        debug!(peer = %peer.short(), addr = %conn.remote_address(), "connected");
+        debug!(peer = %peer.short(), addr = %crossdrop_core::canonical(conn.remote_address()), "connected");
         // Incoming or outgoing, the peer's endpoint is the one it listens on.
-        self.remember_addr(peer, conn.remote_address());
+        self.remember_addr(peer, crossdrop_core::canonical(conn.remote_address()));
         self.conns.lock().unwrap().insert(peer, conn.clone());
         while let Ok((send, recv)) = conn.accept_bi().await {
             let this = self.clone();
@@ -533,7 +533,7 @@ impl Daemon {
         let Pair::Response { accepted, name } = answer else { bail!("unexpected pairing message") };
         let name = peer_name(&name);
         if accepted {
-            self.add_trusted(pair.peer, name.clone(), pair.conn.remote_address())?;
+            self.add_trusted(pair.peer, name.clone(), crossdrop_core::canonical(pair.conn.remote_address()))?;
             info!(peer = %name, id = %pair.peer.short(), "paired");
         }
         Ok(Response::PairResult { paired: accepted, peer_id, peer_name: name })
@@ -589,7 +589,7 @@ impl Daemon {
         let mut rest = [0u8; 1];
         match tokio::time::timeout(PAIR_ACK_TIMEOUT, io.read(&mut rest)).await {
             Ok(Ok(0)) => {
-                self.add_trusted(peer, name.clone(), conn.remote_address())?;
+                self.add_trusted(peer, name.clone(), crossdrop_core::canonical(conn.remote_address()))?;
                 info!(peer = %name, id = %peer.short(), "paired");
                 Ok(())
             }

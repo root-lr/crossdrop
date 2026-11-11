@@ -10,7 +10,6 @@ mod daemon;
 mod files;
 mod ipc;
 
-use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -101,7 +100,7 @@ pub async fn start(opts: Options) -> Result<Handle> {
 
     let identity = Identity::load_or_generate(&paths.home)?;
     let listener = ipc::bind(&paths)?;
-    let node = Node::bind(&identity, SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.port)))?;
+    let node = Node::bind_any(&identity, config.port)?;
     let port = node.local_addr()?.port();
     let trust = TrustStore::load(&paths.trust_file())?;
     let system_clipboard = if config.clipboard_sync { clipboard::SystemClipboard::start() } else { None };

@@ -361,6 +361,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde",
+ "socket2",
  "tempfile",
  "tokio",
  "tracing",
