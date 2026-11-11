@@ -574,3 +574,11 @@ progress::-moz-progress-bar {
     transition: none !important;
   }
 }
+
+.transfer-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: var(--step--1);
+}

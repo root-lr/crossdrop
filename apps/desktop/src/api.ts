@@ -85,6 +85,7 @@ export const api = {
   pairConfirm: (pairId: string, accept: boolean) => invoke<boolean>("pair_confirm", { pairId, accept }),
   pairAnswer: (pairId: string, accept: boolean) => invoke<void>("pair_answer", { pairId, accept }),
   offerAnswer: (offerId: string, accept: boolean) => invoke<void>("offer_answer", { offerId, accept }),
+  receivingCancel: (transferId: string) => invoke<void>("receiving_cancel", { transferId }),
   setPermission: (device: string, service: string, allow: boolean) =>
     invoke<void>("set_permission", { device, service, allow }),
   setAutoAccept: (device: string, enabled: boolean) => invoke<void>("set_auto_accept", { device, enabled }),
