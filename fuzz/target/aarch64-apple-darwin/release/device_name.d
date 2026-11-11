@@ -1,0 +1,1 @@
+/Users/castel/Documents/perso/crossdrop/fuzz/target/aarch64-apple-darwin/release/device_name: /Users/castel/Documents/perso/crossdrop/crates/crossdrop-proto/src/lib.rs /Users/castel/Documents/perso/crossdrop/fuzz/fuzz_targets/device_name.rs

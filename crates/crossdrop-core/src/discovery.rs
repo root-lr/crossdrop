@@ -68,11 +68,7 @@ impl Discovery {
                     .get_property_val_str("name")
                     .and_then(crossdrop_proto::clean_device_name)
                     .unwrap_or_else(|| "unknown".to_string());
-                let addrs = service
-                    .get_addresses_v4()
-                    .into_iter()
-                    .map(|ip| SocketAddr::new(IpAddr::V4(ip), service.port))
-                    .collect();
+                let addrs = usable_addrs(service.get_addresses().iter().map(|ip| ip.to_ip_addr()), service.port);
                 if tx.send(DiscoveryEvent::Found(Discovered { id: peer, name, addrs })).is_err() {
                     break;
                 }
@@ -99,6 +95,32 @@ impl Drop for Discovery {
     }
 }
 
+/// The addresses worth dialling, IPv4 first. Link-local IPv6 addresses are
+/// left out: they need an interface (`%en0`) that remembered addresses
+/// cannot carry.
+fn usable_addrs(ips: impl Iterator<Item = IpAddr>, port: u16) -> Vec<SocketAddr> {
+    let mut ips: Vec<IpAddr> = ips
+        .filter(|ip| match ip {
+            IpAddr::V4(_) => true,
+            IpAddr::V6(v6) => !v6.is_unicast_link_local() && !v6.is_loopback() && !v6.is_unspecified(),
+        })
+        .collect();
+    ips.sort_by_key(|ip| (ip.is_ipv6(), *ip));
+    ips.dedup();
+    ips.into_iter().map(|ip| SocketAddr::new(ip, port)).collect()
+}
+
+#[cfg(test)]
+mod addr_tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_first_and_no_link_local() {
+        let ips = ["fe80::1", "2001:db8::5", "192.168.1.4", "fd00::7", "::1"].map(|s| s.parse::<IpAddr>().unwrap());
+        let got: Vec<String> = usable_addrs(ips.into_iter(), 9).iter().map(|a| a.to_string()).collect();
+        assert_eq!(got, ["192.168.1.4:9", "[2001:db8::5]:9", "[fd00::7]:9"]);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,7 @@ bump the ALPN.
 
 ## Transport
 
-- QUIC over UDP, default port **47470**, ALPN **`crossdrop/1`**.
+- QUIC over UDP, IPv4 and IPv6 (one dual-stack socket), default port **47470**, ALPN **`crossdrop/1`**.
 - TLS 1.3 only, **mutual** authentication. Each device presents a self-signed
   certificate over an Ed25519 key (`identity.crt` / `identity.key` in its data
   directory).
