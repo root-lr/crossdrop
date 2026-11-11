@@ -75,6 +75,123 @@ pub mod hid {
     pub const RIGHT_GUI: u16 = 0xE7;
 }
 
+/// A key with the modifiers that must be held with it, such as the key
+/// that brings the cursor back: `ctrl+alt+escape`, `cmd+shift+f12`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hotkey {
+    pub key: u16,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub gui: bool,
+}
+
+impl Default for Hotkey {
+    fn default() -> Self {
+        Self { key: hid::ESCAPE, ctrl: true, alt: true, shift: false, gui: false }
+    }
+}
+
+/// Key names accepted in a hotkey, besides `a`–`z`, `0`–`9` and `f1`–`f12`.
+const NAMED: &[(&str, u16)] = &[
+    ("escape", 0x29),
+    ("esc", 0x29),
+    ("enter", 0x28),
+    ("return", 0x28),
+    ("backspace", 0x2A),
+    ("tab", 0x2B),
+    ("space", 0x2C),
+    ("insert", 0x49),
+    ("delete", 0x4C),
+    ("home", 0x4A),
+    ("end", 0x4D),
+    ("pageup", 0x4B),
+    ("pagedown", 0x4E),
+    ("pause", 0x48),
+    ("scrolllock", 0x47),
+    ("printscreen", 0x46),
+    ("left", 0x50),
+    ("right", 0x4F),
+    ("up", 0x52),
+    ("down", 0x51),
+];
+
+fn key_from_name(name: &str) -> Option<u16> {
+    let b = name.as_bytes();
+    match b {
+        [c @ b'a'..=b'z'] => Some(0x04 + u16::from(c - b'a')),
+        [b'0'] => Some(0x27),
+        [c @ b'1'..=b'9'] => Some(0x1E + u16::from(c - b'1')),
+        [b'f', ..] => match name[1..].parse::<u16>() {
+            Ok(n @ 1..=12) => Some(0x3A + n - 1),
+            _ => None,
+        },
+        _ => NAMED.iter().find(|(n, _)| *n == name).map(|(_, k)| *k),
+    }
+}
+
+fn key_name(key: u16) -> String {
+    match key {
+        0x04..=0x1D => char::from(b'a' + (key - 0x04) as u8).to_string(),
+        0x1E..=0x26 => char::from(b'1' + (key - 0x1E) as u8).to_string(),
+        0x27 => "0".into(),
+        0x3A..=0x45 => format!("f{}", key - 0x3A + 1),
+        _ => NAMED.iter().find(|(_, k)| *k == key).map_or_else(|| format!("{key:#04x}"), |(n, _)| n.to_string()),
+    }
+}
+
+impl std::str::FromStr for Hotkey {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        let mut hotkey = Hotkey { key: 0, ctrl: false, alt: false, shift: false, gui: false };
+        let parts: Vec<String> = s.split('+').map(|p| p.trim().to_ascii_lowercase()).collect();
+        let (key, mods) = parts.split_last().ok_or("empty hotkey")?;
+        for m in mods {
+            match m.as_str() {
+                "ctrl" | "control" => hotkey.ctrl = true,
+                "alt" | "option" | "opt" => hotkey.alt = true,
+                "shift" => hotkey.shift = true,
+                "cmd" | "command" | "super" | "win" | "meta" | "gui" => hotkey.gui = true,
+                other => return Err(format!("unknown modifier {other:?} in {s:?} (ctrl, alt, shift, cmd)")),
+            }
+        }
+        hotkey.key = key_from_name(key).ok_or_else(|| format!("unknown key {key:?} in {s:?}"))?;
+        if !(hotkey.ctrl || hotkey.alt || hotkey.gui) {
+            // Otherwise typing that key on the neighbour would bring the cursor back.
+            return Err(format!("{s:?} needs ctrl, alt or cmd"));
+        }
+        Ok(hotkey)
+    }
+}
+
+impl std::fmt::Display for Hotkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (on, name) in [(self.ctrl, "Ctrl+"), (self.alt, "Alt+"), (self.shift, "Shift+"), (self.gui, "Cmd+")] {
+            if on {
+                f.write_str(name)?;
+            }
+        }
+        let key = key_name(self.key);
+        let mut c = key.chars();
+        match c.next() {
+            Some(first) => write!(f, "{}{}", first.to_ascii_uppercase(), c.as_str()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Hotkey {
+    /// Whether `key` going down, with the keys in `held`, is this hotkey.
+    pub fn matches(&self, key: u16, held: &std::collections::HashSet<u16>) -> bool {
+        let any = |a: u16, b: u16| held.contains(&a) || held.contains(&b);
+        key == self.key
+            && (!self.ctrl || any(hid::LEFT_CTRL, hid::RIGHT_CTRL))
+            && (!self.alt || any(hid::LEFT_ALT, hid::RIGHT_ALT))
+            && (!self.shift || any(hid::LEFT_SHIFT, hid::RIGHT_SHIFT))
+            && (!self.gui || any(hid::LEFT_GUI, hid::RIGHT_GUI))
+    }
+}
+
 fn find(
     col: impl Fn(&(u16, u16, u16, u16)) -> u16,
     value: u16,
@@ -139,6 +256,24 @@ mod tests {
                 assert_eq!(hid_from_mac(mac), Some(k.0));
             }
         }
+    }
+
+    #[test]
+    fn hotkeys() {
+        let k: Hotkey = "ctrl+alt+escape".parse().unwrap();
+        assert_eq!(k, Hotkey::default());
+        assert_eq!(k.to_string(), "Ctrl+Alt+Escape");
+        let k: Hotkey = "Cmd + Shift + F12".parse().unwrap();
+        assert_eq!((k.key, k.gui, k.shift, k.ctrl), (0x45, true, true, false));
+        assert_eq!("alt+b".parse::<Hotkey>().unwrap().key, 0x05);
+        assert_eq!("ctrl+0".parse::<Hotkey>().unwrap().key, 0x27);
+        assert_eq!("ctrl+1".parse::<Hotkey>().unwrap().to_string(), "Ctrl+1");
+        for bad in ["", "escape", "shift+a", "ctrl+hyper+a", "ctrl+f13", "ctrl+nope"] {
+            assert!(bad.parse::<Hotkey>().is_err(), "{bad}");
+        }
+        let held = [hid::RIGHT_CTRL, hid::LEFT_ALT].into_iter().collect();
+        assert!(Hotkey::default().matches(hid::ESCAPE, &held));
+        assert!(!Hotkey::default().matches(0x04, &held));
     }
 
     #[test]

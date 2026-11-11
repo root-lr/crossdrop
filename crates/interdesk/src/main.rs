@@ -61,7 +61,8 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let platform = platform::native(tx)?;
-            println!("interdesk running on {name}. Ctrl+Alt+Esc brings the cursor back. Ctrl+C to stop.");
+            let back = layout.return_hotkey()?;
+            println!("interdesk running on {name}. {back} brings the cursor back. Ctrl+C to stop.");
             runtime::run(paths, layout, platform, rx, crossdrop_sdk::shutdown_signal()?).await?;
         }
         Command::Add { device, side } => {

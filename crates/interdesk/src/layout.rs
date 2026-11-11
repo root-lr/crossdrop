@@ -8,6 +8,9 @@
 //! side = "right"     # left | right | top | bottom
 //! id = "VCZU-QFPU-…" # optional: the device id, kept by `interdesk add`
 //! ```
+//!
+//! `return_key = "ctrl+alt+escape"` at the top changes the key that brings
+//! the cursor back (modifiers: ctrl, alt, shift, cmd).
 
 use std::path::Path;
 
@@ -71,6 +74,9 @@ impl Neighbor {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layout {
+    /// Brings the cursor back from a neighbour: `ctrl+alt+escape` by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_key: Option<String>,
     #[serde(default, rename = "neighbor")]
     pub neighbors: Vec<Neighbor>,
 }
@@ -93,7 +99,16 @@ impl Layout {
         Ok(())
     }
 
+    /// The key that brings the cursor back.
+    pub fn return_hotkey(&self) -> Result<crate::keymap::Hotkey> {
+        match &self.return_key {
+            Some(k) => k.parse().map_err(|e| anyhow::anyhow!("return_key: {e}")),
+            None => Ok(Default::default()),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
+        self.return_hotkey()?;
         for (i, a) in self.neighbors.iter().enumerate() {
             if self.neighbors[..i].iter().any(|b| b.side == a.side) {
                 bail!("two devices are on the {} side", a.side);
@@ -237,6 +252,14 @@ mod tests {
         assert_eq!(again.neighbors.len(), 2);
         assert!(again.neighbors.iter().any(|n| n.device == "delta" && n.side == Side::Right));
         assert!(toml::from_str::<Layout>("[[neighbor]]\ndevice='a'\nside='up'").is_err());
+
+        // The return key is written before the neighbours, and checked.
+        let mut layout = Layout { return_key: Some("cmd+shift+f12".into()), ..Layout::default() };
+        layout.set("bravo", Side::Right);
+        let text = toml::to_string(&layout).unwrap();
+        assert!(text.starts_with("return_key"), "{text}");
+        assert_eq!(toml::from_str::<Layout>(&text).unwrap().return_hotkey().unwrap().to_string(), "Shift+Cmd+F12");
+        assert!(toml::from_str::<Layout>("return_key = 'escape'").unwrap().validate().is_err());
 
         // An id survives a rename and removes by either name or id.
         let mut layout = Layout::default();

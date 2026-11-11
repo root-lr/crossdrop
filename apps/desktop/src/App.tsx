@@ -142,7 +142,7 @@ export default function App() {
           <span className="track" aria-hidden />
           <span>
             Share mouse and keyboard
-            <small>{data.sharing ? "Push the cursor past an edge to switch. Ctrl+Alt+Esc comes back." : "Off"}</small>
+            <small>{data.sharing ? `Push the cursor past an edge to switch. ${data.return_key} comes back.` : "Off"}</small>
           </span>
         </label>
       </header>

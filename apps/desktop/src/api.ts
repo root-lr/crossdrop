@@ -38,6 +38,8 @@ export interface Overview {
   layout: { device: string; side: Side; id: string | null }[];
   /** interdesk.toml could not be read: why. */
   layout_error: string | null;
+  /** e.g. "Ctrl+Alt+Escape". */
+  return_key: string;
   sharing: boolean;
   embedded: boolean;
 }

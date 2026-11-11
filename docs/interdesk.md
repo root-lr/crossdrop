@@ -36,7 +36,14 @@ desk map. Every computer can be both: it controls its own neighbours and accepts
 control from the devices it allowed. Run `interdesk layout` to see the
 configuration; it lives in `interdesk.toml` in the crossdrop data directory.
 
-**Ctrl+Alt+Esc** on the controlling keyboard brings the cursor back at once.
+**Ctrl+Alt+Esc** on the controlling keyboard brings the cursor back at once. To use another
+key, put it at the top of `interdesk.toml`:
+
+```toml
+return_key = "cmd+shift+f12"   # modifiers: ctrl, alt, shift, cmd (win, super)
+```
+
+It needs ctrl, alt or cmd, so that typing on the neighbour cannot trigger it.
 
 ## Platforms
 

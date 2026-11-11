@@ -57,6 +57,7 @@ pub async fn run(
     drop(link_tx);
 
     let mut session = Session::new(platform.screen(), layout.neighbors.iter().map(|n| n.side).collect());
+    session.set_return_key(layout.return_hotkey()?);
     let mut writers: Vec<Option<UnboundedSender<Msg>>> = vec![None; layout.neighbors.len()];
     platform.set_grab(false);
 
