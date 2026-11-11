@@ -311,8 +311,25 @@ export default function App() {
               </button>
             )}
           </div>
-          {list.length === 0 && <p className="hint">Drop files on a device to send them.</p>}
+          {list.length === 0 && data.receiving.length === 0 && (
+            <p className="hint">Drop files on a device to send them.</p>
+          )}
           <ul className="transfers">
+            {data.receiving.map((r) => (
+              <li key={r.transfer_id || `${r.peer_name}:${r.total_bytes}`}>
+                <div className="transfer-head">
+                  <span>
+                    From <strong>{r.peer_name}</strong>
+                  </span>
+                  <span className="state sending">Receiving</span>
+                </div>
+                <progress max={r.total_bytes || 1} value={r.received_bytes} />
+                <small>
+                  {r.files} {r.files === 1 ? "file" : "files"}, {bytes(r.received_bytes)} of {bytes(r.total_bytes)}
+                  {r.current ? `: ${r.current}` : ""}
+                </small>
+              </li>
+            ))}
             {list.map((t) => (
               <li key={t.id}>
                 <div className="transfer-head">

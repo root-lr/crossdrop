@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crossdrop_proto::ipc::{DeviceInfo, OfferInfo, PairRequestInfo};
+use crossdrop_proto::ipc::{DeviceInfo, OfferInfo, PairRequestInfo, ReceivingInfo};
 use crossdrop_sdk::files::{send_files_with, Declined, SendEvent, SendOptions};
 use crossdrop_sdk::{Client, Paths};
 use interdesk::layout::{Layout, Side};
@@ -76,6 +76,8 @@ struct Overview {
     devices: Vec<DeviceInfo>,
     pairs: Vec<PairRequestInfo>,
     offers: Vec<OfferInfo>,
+    /// Accepted transfers arriving now.
+    receiving: Vec<ReceivingInfo>,
     layout: Vec<Neighbor>,
     /// interdesk.toml could not be read; the desk shows no neighbour.
     layout_error: Option<String>,
@@ -102,6 +104,7 @@ async fn overview(app: State<'_, App>) -> Res<Overview> {
         devices: c.devices().await.map_err(err)?,
         pairs: c.pair_requests().await.map_err(err)?,
         offers: c.offers().await.map_err(err)?,
+        receiving: c.receiving().await.map_err(err)?,
         layout: layout.neighbors.into_iter().map(|n| Neighbor { device: n.device, side: n.side, id: n.id }).collect(),
         layout_error,
         sharing: app.sharing.lock().unwrap().is_some(),
