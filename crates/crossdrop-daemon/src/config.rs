@@ -44,7 +44,15 @@ impl Config {
     pub fn load_or_init(path: &Path) -> Result<Self> {
         if path.exists() {
             let text = std::fs::read_to_string(path)?;
-            return toml::from_str(&text).with_context(|| format!("invalid {}", path.display()));
+            let config = toml::from_str(&text).with_context(|| format!("invalid {}", path.display()))?;
+            // serde skips unknown keys: say so, or a typo is silently ignored.
+            for key in unknown_keys(&text) {
+                let hint = key.replace('-', "_");
+                let hint =
+                    if known_keys().contains(&hint) { format!(" (did you mean {hint:?}?)") } else { String::new() };
+                tracing::warn!("{}: unknown setting {key:?} ignored{hint}", path.display());
+            }
+            return Ok(config);
         }
         let config = Self::default();
         if let Some(dir) = path.parent() {
@@ -53,6 +61,21 @@ impl Config {
         crossdrop_sdk::write_atomic(path, toml::to_string_pretty(&config)?.as_bytes())?;
         Ok(config)
     }
+}
+
+/// The settings `config.toml` may hold.
+fn known_keys() -> Vec<String> {
+    match toml::Table::try_from(Config::default()) {
+        Ok(table) => table.keys().cloned().collect(),
+        Err(_) => vec![],
+    }
+}
+
+/// Top-level keys of a config file that are not settings.
+fn unknown_keys(text: &str) -> Vec<String> {
+    let Ok(table) = text.parse::<toml::Table>() else { return vec![] };
+    let known = known_keys();
+    table.keys().filter(|k| !known.contains(k)).cloned().collect()
 }
 
 /// Default device name: the name the user gave this computer.
@@ -177,6 +200,14 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_settings_are_found() {
+        let text = "name = \"a\"\ndownload-dir = \"/x\"\nclipboard_sync = false\nfoo = 1\n";
+        assert_eq!(unknown_keys(text), ["download-dir", "foo"]);
+        assert!(known_keys().contains(&"download_dir".to_string()));
+        assert!(unknown_keys("").is_empty());
+    }
 
     #[test]
     fn trust_store_roundtrip() {
