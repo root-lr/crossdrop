@@ -57,6 +57,7 @@ pub async fn run(
     drop(link_tx);
 
     let mut session = Session::new(platform.screen(), layout.neighbors.iter().map(|n| n.side).collect());
+    session.set_return_key(layout.return_hotkey()?);
     for (idx, n) in layout.neighbors.iter().enumerate() {
         let (from, to) = n.edge();
         session.set_edge(idx, from, to);

@@ -14,6 +14,9 @@
 //! `from`/`to` line up screens of different sizes: a laptop facing the
 //! lower half of a tall monitor's right edge is `from = 50`. The cursor
 //! crosses only there, and comes back there.
+//!
+//! `return_key = "ctrl+alt+escape"` at the top changes the key that brings
+//! the cursor back (modifiers: ctrl, alt, shift, cmd).
 
 use std::path::Path;
 
@@ -100,6 +103,9 @@ impl Neighbor {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layout {
+    /// Brings the cursor back from a neighbour: `ctrl+alt+escape` by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_key: Option<String>,
     #[serde(default, rename = "neighbor")]
     pub neighbors: Vec<Neighbor>,
 }
@@ -122,7 +128,16 @@ impl Layout {
         Ok(())
     }
 
+    /// The key that brings the cursor back.
+    pub fn return_hotkey(&self) -> Result<crate::keymap::Hotkey> {
+        match &self.return_key {
+            Some(k) => k.parse().map_err(|e| anyhow::anyhow!("return_key: {e}")),
+            None => Ok(Default::default()),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
+        self.return_hotkey()?;
         for (i, a) in self.neighbors.iter().enumerate() {
             if self.neighbors[..i].iter().any(|b| b.side == a.side) {
                 bail!("two devices are on the {} side", a.side);
@@ -289,6 +304,14 @@ mod tests {
         assert!(again.neighbors.iter().any(|n| n.device == "delta" && n.side == Side::Right));
         assert!(toml::from_str::<Layout>("[[neighbor]]\ndevice='a'\nside='up'").is_err());
 
+        // The return key is written before the neighbours, and checked.
+        let mut layout = Layout { return_key: Some("cmd+shift+f12".into()), ..Layout::default() };
+        layout.set("bravo", Side::Right);
+        let text = toml::to_string(&layout).unwrap();
+        assert!(text.starts_with("return_key"), "{text}");
+        assert_eq!(toml::from_str::<Layout>(&text).unwrap().return_hotkey().unwrap().to_string(), "Shift+Cmd+F12");
+        assert!(toml::from_str::<Layout>("return_key = 'escape'").unwrap().validate().is_err());
+
         // A range is kept when the device is placed again, and checked.
         let mut layout = Layout::default();
         layout.place("bravo", "ABCD", Side::Right);
@@ -296,9 +319,11 @@ mod tests {
         layout.place("bravo", "ABCD", Side::Right);
         assert_eq!(layout.neighbors[0].edge(), (0.5, 1.0));
         assert!(layout.set_edge("ABCD", 60, 40).is_err());
-        let text =
-            toml::to_string(&Layout { neighbors: vec![Neighbor { from: 0, to: 100, ..layout.neighbors[0].clone() }] })
-                .unwrap();
+        let text = toml::to_string(&Layout {
+            neighbors: vec![Neighbor { from: 0, to: 100, ..layout.neighbors[0].clone() }],
+            ..Layout::default()
+        })
+        .unwrap();
         assert!(!text.contains("from") && !text.contains("to ="), "defaults are not written: {text}");
 
         // An id survives a rename and removes by either name or id.

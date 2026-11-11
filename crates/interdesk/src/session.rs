@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use crate::keymap::hid;
+use crate::keymap::Hotkey;
 use crate::layout::{along, edge_at, entry_point, return_point, Rect, Side};
 use crate::protocol::{Button, Msg};
 
@@ -58,6 +58,7 @@ enum State {
 pub struct Session {
     screen: Rect,
     sides: Vec<Side>,
+    return_key: Hotkey,
     /// Part of each neighbour's edge that leads to it, as fractions.
     edges: Vec<(f64, f64)>,
     sizes: Vec<Option<(u32, u32)>>,
@@ -76,12 +77,18 @@ impl Session {
         Self {
             screen,
             sides,
+            return_key: Hotkey::default(),
             edges: vec![(0.0, 1.0); n],
             sizes: vec![None; n],
             state: State::Local,
             held: HashSet::new(),
             edge_blocked: false,
         }
+    }
+
+    /// The key that brings the cursor back (Ctrl+Alt+Esc by default).
+    pub fn set_return_key(&mut self, hotkey: Hotkey) {
+        self.return_key = hotkey;
     }
 
     /// Neighbour `idx` faces only `from..to` of its edge (fractions).
@@ -194,9 +201,7 @@ impl Session {
                 } else {
                     self.held.remove(&key);
                 }
-                let ctrl = self.held.contains(&hid::LEFT_CTRL) || self.held.contains(&hid::RIGHT_CTRL);
-                let alt = self.held.contains(&hid::LEFT_ALT) || self.held.contains(&hid::RIGHT_ALT);
-                if down && key == hid::ESCAPE && ctrl && alt {
+                if down && self.return_key.matches(key, &self.held) {
                     // Emergency exit: take control back right now.
                     return self.come_back(None);
                 }
@@ -247,6 +252,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::hid;
 
     fn session() -> Session {
         let mut s = Session::new(Rect { x: 0, y: 0, w: 1920, h: 1080 }, vec![Side::Right, Side::Top]);
@@ -334,6 +340,24 @@ mod tests {
         assert!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: false }).is_empty(), "edge closed");
         s.on_input(Input::Pos { x: 1000, y: 540, pressed: false });
         assert_eq!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: false })[0], Action::Grab(true));
+    }
+
+    #[test]
+    fn the_return_key_can_be_changed() {
+        let mut s = session();
+        s.set_return_key("cmd+shift+f12".parse().unwrap());
+        s.on_input(Input::Pos { x: 1919, y: 540, pressed: false });
+        s.on_input(Input::Key { hid: hid::LEFT_CTRL, down: true });
+        s.on_input(Input::Key { hid: hid::LEFT_ALT, down: true });
+        let a = s.on_input(Input::Key { hid: hid::ESCAPE, down: true });
+        assert_eq!(a, vec![Action::Send(0, Msg::Key { hid: hid::ESCAPE, down: true })], "the old key is a key again");
+        for k in [hid::LEFT_CTRL, hid::LEFT_ALT, hid::ESCAPE] {
+            s.on_input(Input::Key { hid: k, down: false });
+        }
+        s.on_input(Input::Key { hid: hid::RIGHT_GUI, down: true });
+        s.on_input(Input::Key { hid: hid::LEFT_SHIFT, down: true });
+        let a = s.on_input(Input::Key { hid: 0x45, down: true });
+        assert_eq!(a[0], Action::Send(0, Msg::Leave));
     }
 
     #[test]

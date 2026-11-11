@@ -79,6 +79,8 @@ struct Overview {
     layout: Vec<Neighbor>,
     /// interdesk.toml could not be read; the desk shows no neighbour.
     layout_error: Option<String>,
+    /// The key that brings the cursor back, as people write it.
+    return_key: String,
     sharing: bool,
     embedded: bool,
 }
@@ -93,8 +95,10 @@ async fn overview(app: State<'_, App>) -> Res<Overview> {
         Ok(layout) => (layout, None),
         Err(e) => (Layout::default(), Some(err(e))),
     };
+    let return_key = layout.return_hotkey().unwrap_or_default().to_string();
     Ok(Overview {
         me: Me { id, name, port },
+        return_key,
         devices: c.devices().await.map_err(err)?,
         pairs: c.pair_requests().await.map_err(err)?,
         offers: c.offers().await.map_err(err)?,

@@ -48,7 +48,14 @@ The cursor then crosses only along that part, onto the whole of bravo's edge,
 and comes back to the same place. Placing a device again on the same side
 keeps its range.
 
-**Ctrl+Alt+Esc** on the controlling keyboard brings the cursor back at once.
+**Ctrl+Alt+Esc** on the controlling keyboard brings the cursor back at once. To use another
+key, put it at the top of `interdesk.toml`:
+
+```toml
+return_key = "cmd+shift+f12"   # modifiers: ctrl, alt, shift, cmd (win, super)
+```
+
+It needs ctrl, alt or cmd, so that typing on the neighbour cannot trigger it.
 
 ## Platforms
 
