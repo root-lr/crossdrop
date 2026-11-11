@@ -272,6 +272,10 @@ pub mod ipc {
         ListOffers,
         /// Incoming file transfers being received now.
         ListReceiving,
+        /// Stops receiving a transfer and deletes what it stored so far.
+        CancelReceiving {
+            transfer_id: String,
+        },
         OfferAnswer {
             offer_id: String,
             accept: bool,
@@ -337,6 +341,9 @@ pub mod ipc {
     /// An accepted transfer on its way to this device.
     #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
     pub struct ReceivingInfo {
+        /// For `CancelReceiving`.
+        #[serde(default)]
+        pub transfer_id: String,
         pub peer_id: String,
         pub peer_name: String,
         pub files: u32,

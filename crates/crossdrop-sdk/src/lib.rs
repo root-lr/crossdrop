@@ -169,6 +169,13 @@ impl Client {
         }
     }
 
+    /// Stops receiving a transfer (see [`Client::receiving`]) and deletes
+    /// what it stored so far.
+    pub async fn cancel_receiving(&mut self, transfer_id: &str) -> Result<()> {
+        self.request(&Request::CancelReceiving { transfer_id: transfer_id.to_string() }).await?;
+        Ok(())
+    }
+
     /// Incoming file transfers waiting for a decision.
     pub async fn offers(&mut self) -> Result<Vec<OfferInfo>> {
         match self.request(&Request::ListOffers).await? {

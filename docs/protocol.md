@@ -120,6 +120,10 @@ Any paired device may open this service, whatever its permissions.
   bytes but still hashes them, so the final check covers the whole file. A
   journal per transfer keeps the chosen root name and the files already
   completed. Leftovers untouched for 7 days are deleted.
+- **Cancel.** The receiver may stop at any point (`crossdrop cancel`): it
+  sends `{"type":"error","message":"cancelled on the receiving side"}`,
+  closes the stream and deletes that transfer's partial files and journal.
+  A sender whose write fails reads that last frame to report the reason.
 - **Safety.** Path components are cleaned (control characters removed,
   `\ : * ? " < > |` replaced by `_`; on Windows, device names such as `CON`
   or `nul.txt` get a `_` prefix); `..`, empty components and absolute paths

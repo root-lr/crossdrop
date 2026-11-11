@@ -74,7 +74,7 @@ pub(crate) struct Daemon {
     channels: Mutex<HashMap<String, Channel>>,
     offers: Mutex<HashMap<String, PendingOffer>>,
     /// Accepted transfers being received, by an internal number.
-    receiving: Mutex<HashMap<u64, Arc<crate::files::Progress>>>,
+    receiving: Mutex<HashMap<String, Arc<crate::files::Progress>>>,
     clipboard: Option<SystemClipboard>,
     /// Last clipboard text seen locally or applied from a peer (loop guard).
     clip_known: Mutex<Option<String>>,
@@ -215,16 +215,16 @@ impl Daemon {
                 return crate::files::decline(&mut io).await;
             }
             let dir = if to_desktop { &self.config.desktop_dir } else { &self.config.download_dir };
+            let key = self.new_token();
             let progress = Arc::new(crate::files::Progress::new(ReceivingInfo {
+                transfer_id: key.clone(),
                 peer_id: peer.to_string(),
                 peer_name: device.name.clone(),
                 files: offer.entries.len() as u32,
                 total_bytes: offer.entries.iter().map(|e| e.size).sum(),
                 ..Default::default()
             }));
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let key = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.receiving.lock().unwrap().insert(key, progress.clone());
+            self.receiving.lock().unwrap().insert(key.clone(), progress.clone());
             let result = crate::files::receive(&mut io, offer, dir, &peer.to_string(), &device.name, &progress).await;
             self.receiving.lock().unwrap().remove(&key);
             let n = result?;
@@ -761,6 +761,11 @@ impl Daemon {
             Request::ListReceiving => {
                 let transfers = self.receiving.lock().unwrap().values().map(|p| p.get()).collect();
                 Ok(Response::Receiving { transfers })
+            }
+            Request::CancelReceiving { transfer_id } => {
+                let progress = self.receiving.lock().unwrap().get(&transfer_id).cloned();
+                progress.ok_or_else(|| anyhow!("no transfer being received with id {transfer_id}"))?.cancel();
+                Ok(Response::Ok)
             }
             Request::OfferAnswer { offer_id, accept } => {
                 let offer = self.offers.lock().unwrap().remove(&offer_id);

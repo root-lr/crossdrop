@@ -109,23 +109,50 @@ pub(crate) fn part_path(dir: &Path, peer: &str, entry: &FileEntry) -> PathBuf {
     dir.join(PARTIAL_DIR).join(format!("{}.part", key(peer, &[entry])))
 }
 
-/// Where an incoming transfer stands, for `crossdrop transfers` and the app.
-#[derive(Default)]
-pub(crate) struct Progress(std::sync::Mutex<ReceivingInfo>);
+/// Where an incoming transfer stands, for `crossdrop transfers` and the
+/// app, and the switch that cancels it.
+pub(crate) struct Progress {
+    info: std::sync::Mutex<ReceivingInfo>,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Self::new(ReceivingInfo::default())
+    }
+}
 
 impl Progress {
     pub fn new(info: ReceivingInfo) -> Self {
-        Self(std::sync::Mutex::new(info))
+        Self { info: std::sync::Mutex::new(info), cancel: tokio::sync::watch::channel(false).0 }
     }
 
     pub fn get(&self) -> ReceivingInfo {
-        self.0.lock().unwrap().clone()
+        self.info.lock().unwrap().clone()
     }
 
     fn update(&self, f: impl FnOnce(&mut ReceivingInfo)) {
-        f(&mut self.0.lock().unwrap());
+        f(&mut self.info.lock().unwrap());
+    }
+
+    /// Stops the transfer at its next read, even if the sender is stalled.
+    pub fn cancel(&self) {
+        self.cancel.send_replace(true);
+    }
+
+    fn cancelled(&self) -> bool {
+        *self.cancel.borrow()
+    }
+
+    /// Resolves once the transfer is cancelled.
+    async fn until_cancelled(&self) {
+        let mut rx = self.cancel.subscribe();
+        let _ = rx.wait_for(|c| *c).await;
     }
 }
+
+/// Error returned when the user stops a transfer on this side.
+const CANCELLED: &str = "cancelled on the receiving side";
 
 /// Receives an accepted offer into `dir`. Returns how many files were stored.
 pub async fn receive<S>(
@@ -139,7 +166,21 @@ pub async fn receive<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let result = receive_inner(io, offer, dir, peer, from, progress).await;
+    let entries = offer.entries.clone();
+    let result = tokio::select! {
+        r = receive_inner(io, offer, dir, peer, from, progress) => r,
+        () = progress.until_cancelled() => Err(anyhow::anyhow!(CANCELLED)),
+    };
+    if progress.cancelled() {
+        // Nothing to resume: remove the partial files and the journal.
+        let partial = dir.join(PARTIAL_DIR);
+        for e in &entries {
+            let _ = std::fs::remove_file(part_path(dir, peer, e));
+        }
+        let all: Vec<&FileEntry> = entries.iter().collect();
+        let _ = std::fs::remove_file(partial.join(format!("{}.json", key(peer, &all))));
+        info!(from, "transfer cancelled");
+    }
     let answer = match &result {
         Ok(n) => Files::Done { received: *n },
         Err(e) => Files::Error { message: format!("{e:#}") },
@@ -556,6 +597,35 @@ mod tests {
         receiver.await.unwrap();
         let info = progress.get();
         assert_eq!((info.received_bytes, info.current.as_str()), (300_000, "a.bin"));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_transfer_stops_both_sides_and_leaves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("big.bin");
+        std::fs::write(&src, vec![1u8; 4 * 1024 * 1024]).unwrap();
+        let dl = dir.path().join("dl");
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        let progress = std::sync::Arc::new(Progress::default());
+        let (p, dl2) = (progress.clone(), dl.clone());
+        let receiver = tokio::spawn(async move {
+            let offer = read_offer(&mut b).await.unwrap();
+            receive(&mut b, offer, &dl2, "PEER", "peer", &p).await
+        });
+        // Cancel as soon as some bytes are stored.
+        let p = progress.clone();
+        tokio::spawn(async move {
+            while p.get().received_bytes == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            p.cancel();
+        });
+        let err = send_files(&mut a, &[src], &mut |_: SendEvent<'_>| {}).await.unwrap_err();
+        assert!(err.to_string().contains("cancelled on the receiving side"), "{err}");
+        assert!(receiver.await.unwrap().is_err());
+        assert!(!dl.join("big.bin").exists());
+        let left = std::fs::read_dir(dl.join(PARTIAL_DIR)).unwrap().count();
+        assert_eq!(left, 0, "partial file and journal removed");
     }
 
     #[tokio::test]
