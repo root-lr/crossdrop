@@ -127,7 +127,7 @@ impl TrustedDevice {
     }
 
     /// Puts `addr` first among the last known addresses (at most
-    /// [`MAX_ADDRS`]). Returns whether the list changed.
+    /// `MAX_ADDRS`). Returns whether the list changed.
     pub fn remember_addr(&mut self, addr: String) -> bool {
         if self.addrs.first() == Some(&addr) {
             return false;
