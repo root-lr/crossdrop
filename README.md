@@ -109,6 +109,8 @@ Send files and folders:
 crossdrop send report.pdf ~/Pictures/holidays --to bravo
 ```
 
+`-` sends standard input as a file: `pg_dump db | crossdrop send - --name db.sql --to bravo`.
+
 On bravo, `crossdrop accept` (or `crossdrop auto-accept alpha` once). Files
 land in `~/Downloads/crossdrop` (configurable in `config.toml`). If the
 transfer is cut, run the same command again: it resumes.
