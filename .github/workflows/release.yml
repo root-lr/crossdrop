@@ -1,11 +1,11 @@
 name: Release
 
+# From the Actions tab: "Run workflow", with the version to release.
+# The tag is created on the commit the workflow runs on, when the draft
+# release is published. There is no tag trigger on purpose: publishing the
+# draft pushes the tag, and a second run would rebuild and overwrite the
+# assets of the published release, after Homebrew has hashed them.
 on:
-  push:
-    tags: ["v*"]
-  # Or from the Actions tab: "Run workflow", with the version to release.
-  # The tag is created on the commit the workflow runs on, when the draft
-  # release is published.
   workflow_dispatch:
     inputs:
       version:
@@ -17,7 +17,7 @@ permissions:
   contents: write
 
 env:
-  VERSION: ${{ inputs.version || github.ref_name }}
+  VERSION: ${{ inputs.version }}
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
@@ -112,6 +112,7 @@ jobs:
             Command line (crossdrop, crossdropd, interdesk): the `crossdrop-cli-*` archive, or Homebrew:
             ```
             brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
+            brew trust root-lr/crossdrop
             brew install crossdrop
             brew install --cask crossdrop-app
             ```

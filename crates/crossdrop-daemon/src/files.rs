@@ -11,6 +11,7 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use crossdrop_proto::ipc::ReceivingInfo;
 use crossdrop_proto::wire::{FileEntry, Files};
 use crossdrop_proto::{read_frame, write_frame};
 use serde::{Deserialize, Serialize};
@@ -108,12 +109,37 @@ pub(crate) fn part_path(dir: &Path, peer: &str, entry: &FileEntry) -> PathBuf {
     dir.join(PARTIAL_DIR).join(format!("{}.part", key(peer, &[entry])))
 }
 
+/// Where an incoming transfer stands, for `crossdrop transfers` and the app.
+#[derive(Default)]
+pub(crate) struct Progress(std::sync::Mutex<ReceivingInfo>);
+
+impl Progress {
+    pub fn new(info: ReceivingInfo) -> Self {
+        Self(std::sync::Mutex::new(info))
+    }
+
+    pub fn get(&self) -> ReceivingInfo {
+        self.0.lock().unwrap().clone()
+    }
+
+    fn update(&self, f: impl FnOnce(&mut ReceivingInfo)) {
+        f(&mut self.0.lock().unwrap());
+    }
+}
+
 /// Receives an accepted offer into `dir`. Returns how many files were stored.
-pub async fn receive<S>(io: &mut S, offer: Offer, dir: &Path, peer: &str, from: &str) -> Result<u32>
+pub async fn receive<S>(
+    io: &mut S,
+    offer: Offer,
+    dir: &Path,
+    peer: &str,
+    from: &str,
+    progress: &Progress,
+) -> Result<u32>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let result = receive_inner(io, offer, dir, peer, from).await;
+    let result = receive_inner(io, offer, dir, peer, from, progress).await;
     let answer = match &result {
         Ok(n) => Files::Done { received: *n },
         Err(e) => Files::Error { message: format!("{e:#}") },
@@ -124,7 +150,14 @@ where
     result
 }
 
-async fn receive_inner<S>(io: &mut S, offer: Offer, dir: &Path, peer: &str, from: &str) -> Result<u32>
+async fn receive_inner<S>(
+    io: &mut S,
+    offer: Offer,
+    dir: &Path,
+    peer: &str,
+    from: &str,
+    progress: &Progress,
+) -> Result<u32>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -164,6 +197,7 @@ where
     }
     t.save()?;
     write_frame(io, &Files::Answer { accepted: true, offsets: offsets.clone() }).await?;
+    progress.update(|p| p.received_bytes = offsets.iter().sum());
 
     let mut received = 0u32;
     let mut buf = vec![0u8; CHUNK];
@@ -178,6 +212,7 @@ where
             continue;
         }
 
+        progress.update(|p| p.current = entry.path.clone());
         let part = part_path(dir, peer, entry);
         let mut file =
             tokio::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&part).await?;
@@ -203,6 +238,7 @@ where
             hasher.update(&buf[..n]);
             file.write_all(&buf[..n]).await?;
             left -= n as u64;
+            progress.update(|p| p.received_bytes += n as u64);
         }
         file.flush().await?;
         drop(file);
@@ -497,10 +533,29 @@ mod tests {
         let dl = dl.to_path_buf();
         let receiver = tokio::spawn(async move {
             let offer = read_offer(&mut b).await.unwrap();
-            receive(&mut b, offer, &dl, "PEER", "peer").await.unwrap()
+            receive(&mut b, offer, &dl, "PEER", "peer", &Progress::default()).await.unwrap()
         });
         let report = send_files(&mut a, src, &mut |_: SendEvent<'_>| {}).await.unwrap();
         (report, receiver.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn progress_counts_every_byte_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.bin");
+        std::fs::write(&src, vec![7u8; 300_000]).unwrap();
+        let dl = dir.path().join("dl");
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        let progress = std::sync::Arc::new(Progress::default());
+        let p = progress.clone();
+        let receiver = tokio::spawn(async move {
+            let offer = read_offer(&mut b).await.unwrap();
+            receive(&mut b, offer, &dl, "PEER", "peer", &p).await.unwrap()
+        });
+        send_files(&mut a, &[src], &mut |_: SendEvent<'_>| {}).await.unwrap();
+        receiver.await.unwrap();
+        let info = progress.get();
+        assert_eq!((info.received_bytes, info.current.as_str()), (300_000, "a.bin"));
     }
 
     #[tokio::test]
@@ -558,7 +613,7 @@ mod tests {
         let dl2 = dl.clone();
         let receiver = tokio::spawn(async move {
             let offer = read_offer(&mut b).await.unwrap();
-            receive(&mut b, offer, &dl2, "PEER", "peer").await
+            receive(&mut b, offer, &dl2, "PEER", "peer", &Progress::default()).await
         });
         let sent = send_files(&mut a, &[src], &mut |_: SendEvent<'_>| {}).await;
         assert!(sent.is_err());

@@ -270,6 +270,8 @@ pub mod ipc {
         },
         /// Incoming file transfers waiting for a decision.
         ListOffers,
+        /// Incoming file transfers being received now.
+        ListReceiving,
         OfferAnswer {
             offer_id: String,
             accept: bool,
@@ -306,6 +308,7 @@ pub mod ipc {
         PairRequests { requests: Vec<PairRequestInfo> },
         ChannelReady { channel_id: String },
         Offers { offers: Vec<OfferInfo> },
+        Receiving { transfers: Vec<ReceivingInfo> },
         Sent { count: u32 },
         Clipboard { text: Option<String>, from: Option<String> },
     }
@@ -329,6 +332,19 @@ pub mod ipc {
         /// This device's clipboard copies are sent to it.
         #[serde(default)]
         pub clipboard_send: bool,
+    }
+
+    /// An accepted transfer on its way to this device.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct ReceivingInfo {
+        pub peer_id: String,
+        pub peer_name: String,
+        pub files: u32,
+        pub total_bytes: u64,
+        /// Bytes stored so far, including those kept from an earlier attempt.
+        pub received_bytes: u64,
+        /// Path of the file being received.
+        pub current: String,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -64,6 +64,7 @@ cd apps/desktop && npm ci && npm run tauri build
 
 ```sh
 brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
+brew trust root-lr/crossdrop        # Homebrew asks to trust third-party taps
 brew install crossdrop              # crossdrop, crossdropd, interdesk
 brew services start crossdrop       # keep the daemon running
 brew install --cask crossdrop-app   # the desktop app (macOS, Apple silicon and Intel)
@@ -133,6 +134,7 @@ itself. From a script or a server:
 | `crossdrop devices` | Paired and nearby devices |
 | `crossdrop pair <name \| id \| ip:port>` | Start pairing |
 | `crossdrop requests` / `accept` / `reject` | Answer pairing requests and incoming transfers |
+| `crossdrop transfers [--watch]` | See the files being received, and how far they are |
 | `crossdrop send <files or folders…> --to <device> [--to <device>…]` | Send, or resume sending |
 | `crossdrop auto-accept <device> [--off]` | Trust a device's files without asking |
 | `crossdrop clip send [text] [--to device]` / `clip get` | Share text with clipboards |

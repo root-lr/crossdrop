@@ -36,6 +36,18 @@ desk map. Every computer can be both: it controls its own neighbours and accepts
 control from the devices it allowed. Run `interdesk layout` to see the
 configuration; it lives in `interdesk.toml` in the crossdrop data directory.
 
+Screens of different sizes can be lined up: say which part of alpha's edge
+bravo faces, in percent from the left or top end.
+
+```sh
+interdesk add bravo right --from 50   # bravo faces the lower half of the right edge
+interdesk add bravo right --from 0 --to 100   # the whole edge again
+```
+
+The cursor then crosses only along that part, onto the whole of bravo's edge,
+and comes back to the same place. Placing a device again on the same side
+keeps its range.
+
 **Ctrl+Alt+Esc** on the controlling keyboard brings the cursor back at once. To use another
 key, put it at the top of `interdesk.toml`:
 

@@ -7,7 +7,13 @@
 //! device = "bravo"   # crossdrop device name or id prefix
 //! side = "right"     # left | right | top | bottom
 //! id = "VCZU-QFPU-…" # optional: the device id, kept by `interdesk add`
+//! from = 50          # optional: the part of this screen's edge that the
+//! to = 100           # neighbour faces, in % (0 = left or top end)
 //! ```
+//!
+//! `from`/`to` line up screens of different sizes: a laptop facing the
+//! lower half of a tall monitor's right edge is `from = 50`. The cursor
+//! crosses only there, and comes back there.
 //!
 //! `return_key = "ctrl+alt+escape"` at the top changes the key that brings
 //! the cursor back (modifiers: ctrl, alt, shift, cmd).
@@ -59,9 +65,32 @@ pub struct Neighbor {
     /// and unambiguous when two devices share a name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Start of the shared part of this screen's edge, in %.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub from: u8,
+    /// End of the shared part of this screen's edge, in %.
+    #[serde(default = "full", skip_serializing_if = "is_full")]
+    pub to: u8,
+}
+
+fn is_zero(v: &u8) -> bool {
+    *v == 0
+}
+
+fn full() -> u8 {
+    100
+}
+
+fn is_full(v: &u8) -> bool {
+    *v == 100
 }
 
 impl Neighbor {
+    /// The shared part of this screen's edge, as fractions of its length.
+    pub fn edge(&self) -> (f64, f64) {
+        (f64::from(self.from) / 100.0, f64::from(self.to) / 100.0)
+    }
+
     /// How to ask the daemon for this device: its id when known.
     pub fn target(&self) -> &str {
         self.id.as_deref().unwrap_or(&self.device)
@@ -113,20 +142,42 @@ impl Layout {
             if self.neighbors[..i].iter().any(|b| b.side == a.side) {
                 bail!("two devices are on the {} side", a.side);
             }
+            if a.from >= a.to || a.to > 100 {
+                bail!("{}: from = {} and to = {} must satisfy 0 <= from < to <= 100", a.device, a.from, a.to);
+            }
         }
         Ok(())
     }
 
     /// Adds or moves `device`; any other device on that side is replaced.
     pub fn set(&mut self, device: &str, side: Side) {
+        let (from, to) = self.edge_of(side, |n| n.is(device));
         self.neighbors.retain(|n| n.side != side && !n.is(device));
-        self.neighbors.push(Neighbor { device: device.to_string(), side, id: None });
+        self.neighbors.push(Neighbor { device: device.to_string(), side, id: None, from, to });
     }
 
     /// Like [`Layout::set`], also remembering the device's id.
     pub fn place(&mut self, name: &str, id: &str, side: Side) {
+        let (from, to) = self.edge_of(side, |n| n.is(name) || n.is(id));
         self.neighbors.retain(|n| n.side != side && !n.is(name) && !n.is(id));
-        self.neighbors.push(Neighbor { device: name.to_string(), side, id: Some(id.to_string()) });
+        self.neighbors.push(Neighbor { device: name.to_string(), side, id: Some(id.to_string()), from, to });
+    }
+
+    /// The range kept when a device is placed again on the side it is on.
+    fn edge_of(&self, side: Side, same: impl Fn(&Neighbor) -> bool) -> (u8, u8) {
+        match self.neighbors.iter().find(|n| n.side == side && same(n)) {
+            Some(n) => (n.from, n.to),
+            None => (0, 100),
+        }
+    }
+
+    /// Sets the part of this screen's edge that `device` faces.
+    pub fn set_edge(&mut self, device: &str, from: u8, to: u8) -> Result<()> {
+        let Some(n) = self.neighbors.iter_mut().find(|n| n.is(device)) else {
+            bail!("{device} is not in the layout");
+        };
+        (n.from, n.to) = (from, to);
+        self.validate()
     }
 
     /// Removes the device named `device`, or with that id.
@@ -260,6 +311,20 @@ mod tests {
         assert!(text.starts_with("return_key"), "{text}");
         assert_eq!(toml::from_str::<Layout>(&text).unwrap().return_hotkey().unwrap().to_string(), "Shift+Cmd+F12");
         assert!(toml::from_str::<Layout>("return_key = 'escape'").unwrap().validate().is_err());
+
+        // A range is kept when the device is placed again, and checked.
+        let mut layout = Layout::default();
+        layout.place("bravo", "ABCD", Side::Right);
+        layout.set_edge("ABCD", 50, 100).unwrap();
+        layout.place("bravo", "ABCD", Side::Right);
+        assert_eq!(layout.neighbors[0].edge(), (0.5, 1.0));
+        assert!(layout.set_edge("ABCD", 60, 40).is_err());
+        let text = toml::to_string(&Layout {
+            neighbors: vec![Neighbor { from: 0, to: 100, ..layout.neighbors[0].clone() }],
+            ..Layout::default()
+        })
+        .unwrap();
+        assert!(!text.contains("from") && !text.contains("to ="), "defaults are not written: {text}");
 
         // An id survives a rename and removes by either name or id.
         let mut layout = Layout::default();

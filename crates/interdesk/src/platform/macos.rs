@@ -115,9 +115,8 @@ fn translate(kind: CGEventType, event: &CGEvent, grabbed: bool) -> Option<Input>
             Some(Input::Button { button, down: matches!(kind, OtherMouseDown) })
         }
         ScrollWheel => {
-            let dy = event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1) as i32;
-            let dx = event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2) as i32;
-            (dx != 0 || dy != 0).then_some(Input::Wheel { dx: dx * WHEEL_NOTCH, dy: dy * WHEEL_NOTCH })
+            let (dx, dy) = scroll_units(event);
+            (dx != 0 || dy != 0).then_some(Input::Wheel { dx, dy })
         }
         KeyDown | KeyUp => {
             let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
@@ -201,6 +200,31 @@ pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
         );
     }
     Ok(Arc::new(Mac { state: Mutex::new(Injected::default()) }))
+}
+
+/// Points of trackpad scrolling sent as one wheel notch: macOS scrolls
+/// about ten points per line.
+const POINTS_PER_NOTCH: i64 = 10;
+
+/// A scroll event in 1/120 of a notch. A trackpad (or a smooth-scrolling
+/// mouse) sends many small "continuous" events whose line count is rounded
+/// up to at least one line: counted as notches, a gentle swipe scrolled the
+/// neighbour by dozens of notches. Their point deltas give the real amount.
+fn scroll_units(event: &CGEvent) -> (i32, i32) {
+    let field = |f| event.get_integer_value_field(f);
+    if field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS) != 0 {
+        let units = |points: i64| (points * i64::from(WHEEL_NOTCH) / POINTS_PER_NOTCH) as i32;
+        (
+            units(field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2)),
+            units(field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1)),
+        )
+    } else {
+        let units = |lines: i64| (lines as i32).saturating_mul(WHEEL_NOTCH);
+        (
+            units(field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2)),
+            units(field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1)),
+        )
+    }
 }
 
 fn source() -> Option<CGEventSource> {
@@ -321,5 +345,27 @@ impl Platform for Mac {
         }
         e.set_flags(CGEventFlags::from_bits_truncate(st.flags));
         post(e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_graphics::event::CGScrollEventUnit;
+
+    fn scroll(unit: CGScrollEventUnit, dy: i32, dx: i32) -> Option<Input> {
+        let source = CGEventSource::new(CGEventSourceStateID::Private).unwrap();
+        let event = CGEvent::new_scroll_event(source, unit, 2, dy, dx, 0).unwrap();
+        translate(CGEventType::ScrollWheel, &event, true)
+    }
+
+    #[test]
+    fn trackpad_scrolling_keeps_small_movements() {
+        // 3 points down: macOS also reports it as a whole line, which used to
+        // be sent as a whole notch (120).
+        assert_eq!(scroll(ScrollEventUnit::PIXEL, -3, 0), Some(Input::Wheel { dx: 0, dy: -36 }));
+        assert_eq!(scroll(ScrollEventUnit::PIXEL, 0, 20), Some(Input::Wheel { dx: 240, dy: 0 }));
+        // A wheel notch is still a whole notch.
+        assert_eq!(scroll(ScrollEventUnit::LINE, 1, 0), Some(Input::Wheel { dx: 0, dy: WHEEL_NOTCH }));
     }
 }

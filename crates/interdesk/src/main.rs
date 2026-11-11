@@ -29,7 +29,17 @@ enum Command {
     /// Share this computer's mouse and keyboard and accept control from neighbours.
     Run,
     /// Place a paired device next to this screen: left, right, top or bottom.
-    Add { device: String, side: Side },
+    Add {
+        device: String,
+        side: Side,
+        /// For screens of different sizes: where along this screen's edge the
+        /// device starts, in % (0 = left or top end).
+        #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(0..100))]
+        from: Option<u8>,
+        /// Where along this screen's edge the device ends, in %.
+        #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(1..=100))]
+        to: Option<u8>,
+    },
     /// Remove a device from the layout.
     Remove { device: String },
     /// Show the layout.
@@ -65,11 +75,14 @@ async fn run(cli: Cli) -> Result<()> {
             println!("interdesk running on {name}. {back} brings the cursor back. Ctrl+C to stop.");
             runtime::run(paths, layout, platform, rx, crossdrop_sdk::shutdown_signal()?).await?;
         }
-        Command::Add { device, side } => {
+        Command::Add { device, side, from, to } => {
             let devices = Client::connect(paths.clone()).await?.devices().await?;
             let found = find_paired(&devices, &device)?;
             let mut layout = Layout::load(&file)?;
             layout.place(&found.name, &found.id, side);
+            if from.is_some() || to.is_some() {
+                layout.set_edge(&found.id, from.unwrap_or(0), to.unwrap_or(100))?;
+            }
             layout.save(&file)?;
             println!("{} is now on the {side} of this screen.", found.name);
             println!("On {}, allow this device to control it: crossdrop allow <this device> input", found.name);
@@ -88,7 +101,12 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("No neighbour. Add one with `interdesk add <device> right`.");
             }
             for n in layout.neighbors {
-                println!("{:<7} {}", n.side, n.device);
+                let part = if (n.from, n.to) == (0, 100) {
+                    String::new()
+                } else {
+                    format!("  ({}–{}% of the edge)", n.from, n.to)
+                };
+                println!("{:<7} {}{part}", n.side, n.device);
             }
         }
     }
