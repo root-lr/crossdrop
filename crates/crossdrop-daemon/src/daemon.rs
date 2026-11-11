@@ -10,7 +10,7 @@ use crossdrop_core::{
     open_channel, peer_id, sas, Channel, Connection, DeviceId, Discovered, Node, PendingChannel, Rejected,
     CHANNEL_VERSION,
 };
-use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
+use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, ReceivingInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
 use crossdrop_proto::{read_frame, read_frame_max, services, write_frame, MAX_SMALL_FRAME_LEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -73,6 +73,8 @@ pub(crate) struct Daemon {
     services: Mutex<HashMap<String, mpsc::UnboundedSender<Event>>>,
     channels: Mutex<HashMap<String, Channel>>,
     offers: Mutex<HashMap<String, PendingOffer>>,
+    /// Accepted transfers being received, by an internal number.
+    receiving: Mutex<HashMap<u64, Arc<crate::files::Progress>>>,
     clipboard: Option<SystemClipboard>,
     /// Last clipboard text seen locally or applied from a peer (loop guard).
     clip_known: Mutex<Option<String>>,
@@ -93,6 +95,7 @@ impl Daemon {
             services: Mutex::default(),
             channels: Mutex::default(),
             offers: Mutex::default(),
+            receiving: Mutex::default(),
             clipboard,
             clip_known: Mutex::default(),
             clip_received: Mutex::default(),
@@ -212,7 +215,19 @@ impl Daemon {
                 return crate::files::decline(&mut io).await;
             }
             let dir = if to_desktop { &self.config.desktop_dir } else { &self.config.download_dir };
-            let n = crate::files::receive(&mut io, offer, dir, &peer.to_string(), &device.name).await?;
+            let progress = Arc::new(crate::files::Progress::new(ReceivingInfo {
+                peer_id: peer.to_string(),
+                peer_name: device.name.clone(),
+                files: offer.entries.len() as u32,
+                total_bytes: offer.entries.iter().map(|e| e.size).sum(),
+                ..Default::default()
+            }));
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let key = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.receiving.lock().unwrap().insert(key, progress.clone());
+            let result = crate::files::receive(&mut io, offer, dir, &peer.to_string(), &device.name, &progress).await;
+            self.receiving.lock().unwrap().remove(&key);
+            let n = result?;
             info!(from = %device.name, files = n, dir = %dir.display(), "transfer complete");
             return Ok(());
         }
@@ -742,6 +757,10 @@ impl Daemon {
             Request::ListOffers => {
                 let offers = self.offers.lock().unwrap().values().map(|o| o.info.clone()).collect();
                 Ok(Response::Offers { offers })
+            }
+            Request::ListReceiving => {
+                let transfers = self.receiving.lock().unwrap().values().map(|p| p.get()).collect();
+                Ok(Response::Receiving { transfers })
             }
             Request::OfferAnswer { offer_id, accept } => {
                 let offer = self.offers.lock().unwrap().remove(&offer_id);

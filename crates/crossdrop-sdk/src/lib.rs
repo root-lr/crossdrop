@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, Request, Response};
+use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, ReceivingInfo, Request, Response};
 use crossdrop_proto::{read_frame, write_frame};
 
 pub mod files;
@@ -159,6 +159,14 @@ impl Client {
         let req = Request::SetPermission { device: device.into(), service: service.into(), allow };
         self.request(&req).await?;
         Ok(())
+    }
+
+    /// Accepted incoming transfers, with how far they are.
+    pub async fn receiving(&mut self) -> Result<Vec<ReceivingInfo>> {
+        match self.request(&Request::ListReceiving).await? {
+            Response::Receiving { transfers } => Ok(transfers),
+            other => Err(unexpected(other)),
+        }
     }
 
     /// Incoming file transfers waiting for a decision.

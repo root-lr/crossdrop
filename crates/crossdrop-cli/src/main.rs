@@ -93,6 +93,12 @@ enum Command {
     },
     /// List pairing requests and incoming transfers waiting for an answer.
     Requests,
+    /// Show the files being received now, and how far they are
+    /// (`--watch` to follow them until they end).
+    Transfers {
+        #[arg(long, short)]
+        watch: bool,
+    },
     /// Accept a pairing request or an incoming transfer (the only one, if no id is given).
     Accept {
         id: Option<String>,
@@ -315,6 +321,35 @@ async fn run(cli: Cli) -> Result<()> {
                 );
             } else {
                 bail!("{peer_name} refused the pairing");
+            }
+        }
+
+        Command::Transfers { watch } => {
+            let mut client = connect().await?;
+            loop {
+                let transfers = client.receiving().await?;
+                if cli.json {
+                    return print_json(serde_json::to_value(&transfers)?);
+                }
+                if transfers.is_empty() {
+                    outln!("Nothing being received.");
+                }
+                for t in &transfers {
+                    let pct = (t.received_bytes * 100).checked_div(t.total_bytes).unwrap_or(100);
+                    outln!(
+                        "{pct:>3}%  {} / {}  from {}, {} file(s)  {}",
+                        human(t.received_bytes),
+                        human(t.total_bytes),
+                        t.peer_name,
+                        t.files,
+                        t.current
+                    );
+                }
+                if !watch || transfers.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                outln!();
             }
         }
 
