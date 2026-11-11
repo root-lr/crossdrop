@@ -8,7 +8,7 @@ cask "crossdrop-app" do
   desc "Share files, clipboard, mouse and keyboard across your computers"
   homepage "https://github.com/root-lr/crossdrop"
 
-  depends_on macos: ">= :monterey"
+  depends_on macos: :monterey
 
   app "crossdrop.app"
 
