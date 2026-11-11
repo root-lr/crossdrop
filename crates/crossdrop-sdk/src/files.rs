@@ -207,33 +207,46 @@ where
     let resumed: u64 = items.iter().zip(&offsets).map(|((e, _), o)| (*o).min(e.size)).sum();
     on_event(SendEvent::Accepted { resumed });
 
-    let mut done = resumed;
-    let mut buf = vec![0u8; CHUNK];
-    for ((entry, source), offset) in items.iter().zip(offsets) {
-        let offset = offset.min(entry.size);
-        let mut file = tokio::fs::File::open(source).await.with_context(|| format!("{}", source.display()))?;
-        let mut hasher = blake3::Hasher::new();
-        let mut pos = 0u64;
-        while pos < entry.size {
-            let want = CHUNK.min((entry.size - pos) as usize);
-            let n = file.read(&mut buf[..want]).await?;
-            if n == 0 {
-                bail!("{} changed while being sent", source.display());
+    let sent: Result<()> = async {
+        let mut done = resumed;
+        let mut buf = vec![0u8; CHUNK];
+        for ((entry, source), offset) in items.iter().zip(offsets) {
+            let offset = offset.min(entry.size);
+            let mut file = tokio::fs::File::open(source).await.with_context(|| format!("{}", source.display()))?;
+            let mut hasher = blake3::Hasher::new();
+            let mut pos = 0u64;
+            while pos < entry.size {
+                let want = CHUNK.min((entry.size - pos) as usize);
+                let n = file.read(&mut buf[..want]).await?;
+                if n == 0 {
+                    bail!("{} changed while being sent", source.display());
+                }
+                hasher.update(&buf[..n]);
+                let end = pos + n as u64;
+                if end > offset {
+                    let from = offset.saturating_sub(pos) as usize;
+                    io.write_all(&buf[from..n]).await?;
+                    done += (n - from) as u64;
+                    on_event(SendEvent::Progress { path: &entry.path, done, total });
+                }
+                pos = end;
             }
-            hasher.update(&buf[..n]);
-            let end = pos + n as u64;
-            if end > offset {
-                let from = offset.saturating_sub(pos) as usize;
-                io.write_all(&buf[from..n]).await?;
-                done += (n - from) as u64;
-                on_event(SendEvent::Progress { path: &entry.path, done, total });
-            }
-            pos = end;
+            write_frame(io, &Files::FileEnd { blake3: hasher.finalize().to_hex().to_string() }).await?;
         }
-        write_frame(io, &Files::FileEnd { blake3: hasher.finalize().to_hex().to_string() }).await?;
+        write_frame(io, &Files::End).await?;
+        io.flush().await?;
+        Ok(())
     }
-    write_frame(io, &Files::End).await?;
-    io.flush().await?;
+    .await;
+    if let Err(e) = sent {
+        // The receiver may have stopped the transfer and said why before
+        // closing: report that rather than "broken pipe".
+        let last = tokio::time::timeout(std::time::Duration::from_secs(2), read_frame::<_, Files>(io)).await;
+        if let Ok(Ok(Files::Error { message })) = last {
+            bail!("receiver error: {message}");
+        }
+        return Err(e);
+    }
     match read_frame::<_, Files>(io).await? {
         Files::Done { received } => Ok(SendReport { received, bytes_sent: total - resumed, resumed }),
         Files::Error { message } => bail!("receiver error: {message}"),

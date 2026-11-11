@@ -99,6 +99,9 @@ enum Command {
         #[arg(long, short)]
         watch: bool,
     },
+    /// Stop receiving a transfer and delete what it stored so far (the only
+    /// one, if no id is given; see `crossdrop transfers`).
+    Cancel { id: Option<String> },
     /// Accept a pairing request or an incoming transfer (the only one, if no id is given).
     Accept {
         id: Option<String>,
@@ -337,7 +340,8 @@ async fn run(cli: Cli) -> Result<()> {
                 for t in &transfers {
                     let pct = (t.received_bytes * 100).checked_div(t.total_bytes).unwrap_or(100);
                     outln!(
-                        "{pct:>3}%  {} / {}  from {}, {} file(s)  {}",
+                        "{}  {pct:>3}%  {} / {}  from {}, {} file(s)  {}",
+                        &t.transfer_id[..8.min(t.transfer_id.len())],
                         human(t.received_bytes),
                         human(t.total_bytes),
                         t.peer_name,
@@ -351,6 +355,28 @@ async fn run(cli: Cli) -> Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 outln!();
             }
+        }
+
+        Command::Cancel { id } => {
+            let mut client = connect().await?;
+            let transfers = client.receiving().await?;
+            let matching: Vec<_> = match &id {
+                Some(id) => transfers.iter().filter(|t| t.transfer_id.starts_with(id.as_str())).collect(),
+                None => transfers.iter().collect(),
+            };
+            let t = match matching.as_slice() {
+                [t] => *t,
+                [] if id.is_some() => bail!("no transfer being received matches {:?}", id.unwrap()),
+                [] => bail!("nothing is being received"),
+                _ => bail!("{} transfers match: give the id shown by `crossdrop transfers`", matching.len()),
+            };
+            client.cancel_receiving(&t.transfer_id).await?;
+            outln!(
+                "Cancelled the transfer from {} ({} of {} received, deleted).",
+                t.peer_name,
+                human(t.received_bytes),
+                human(t.total_bytes)
+            );
         }
 
         Command::Requests => {

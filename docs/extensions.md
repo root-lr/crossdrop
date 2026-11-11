@@ -57,7 +57,7 @@ connection's **first request** decides what it is:
 
 Request / response calls: `status`, `list_devices`, `pair_start`,
 `pair_confirm`, `list_pair_requests`, `pair_answer`, `unpair`,
-`set_permission`, `open_channel`, `list_offers`, `list_receiving`, `offer_answer`,
+`set_permission`, `open_channel`, `list_offers`, `list_receiving`, `cancel_receiving`, `offer_answer`,
 `set_auto_accept`, `clipboard_send`, `clipboard_get`. Errors come back as
 `{"type":"error","message":"…"}`. Field names are in
 [`crossdrop-proto`](../crates/crossdrop-proto/src/lib.rs).
