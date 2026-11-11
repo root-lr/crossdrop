@@ -43,7 +43,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
   # The oldest Rust the crates declare (rust-version in Cargo.toml).
@@ -100,5 +100,6 @@ jobs:
         working-directory: apps/desktop
       - run: npm run build
         working-directory: apps/desktop
-      - run: cargo clippy --features custom-protocol -- -D warnings
+      # --locked: a crate dependency added without updating this lock fails here.
+      - run: cargo clippy --locked --features custom-protocol -- -D warnings
         working-directory: apps/desktop/src-tauri
