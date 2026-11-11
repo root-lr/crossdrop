@@ -1,0 +1,30 @@
+[package]
+name = "crossdrop-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+crossdrop-proto = { path = "../crates/crossdrop-proto" }
+tokio = { version = "1", features = ["rt", "io-util"] }
+
+# Not part of the main workspace: it needs nightly and libFuzzer.
+[workspace]
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "device_name"
+path = "fuzz_targets/device_name.rs"
+test = false
+doc = false
+bench = false

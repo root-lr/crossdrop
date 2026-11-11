@@ -68,3 +68,8 @@ before pushing catches most timing issues.
 
 By contributing, you agree that your contributions are licensed under the
 same terms as the project: MIT or Apache-2.0, at the user's option.
+
+## Fuzzing
+
+The frame decoder and the cleaning of device names have fuzz targets in
+[`fuzz/`](fuzz/README.md) (`cargo +nightly fuzz run frames`).
