@@ -64,6 +64,7 @@ cd apps/desktop && npm ci && npm run tauri build
 
 ```sh
 brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
+brew trust root-lr/crossdrop        # Homebrew asks to trust third-party taps
 brew install crossdrop              # crossdrop, crossdropd, interdesk
 brew services start crossdrop       # keep the daemon running
 brew install --cask crossdrop-app   # the desktop app (macOS, Apple silicon and Intel)
