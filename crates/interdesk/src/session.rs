@@ -58,6 +58,8 @@ enum State {
 pub struct Session {
     screen: Rect,
     sides: Vec<Side>,
+    /// Part of each neighbour's edge that leads to it, as fractions.
+    edges: Vec<(f64, f64)>,
     sizes: Vec<Option<(u32, u32)>>,
     state: State,
     /// Keys held on the source while remote, for the escape shortcut.
@@ -71,7 +73,22 @@ impl Session {
     /// `sides[i]` is where neighbour `i` sits.
     pub fn new(screen: Rect, sides: Vec<Side>) -> Self {
         let n = sides.len();
-        Self { screen, sides, sizes: vec![None; n], state: State::Local, held: HashSet::new(), edge_blocked: false }
+        Self {
+            screen,
+            sides,
+            edges: vec![(0.0, 1.0); n],
+            sizes: vec![None; n],
+            state: State::Local,
+            held: HashSet::new(),
+            edge_blocked: false,
+        }
+    }
+
+    /// Neighbour `idx` faces only `from..to` of its edge (fractions).
+    pub fn set_edge(&mut self, idx: usize, from: f64, to: f64) {
+        if let Some(e) = self.edges.get_mut(idx) {
+            *e = (from, to);
+        }
     }
 
     pub fn remote(&self) -> Option<usize> {
@@ -130,7 +147,14 @@ impl Session {
         }
         let Some(idx) = self.sides.iter().position(|s| *s == side) else { return vec![] };
         let Some((w, h)) = self.sizes[idx] else { return vec![] };
+        // Only the part of the edge the neighbour faces leads to it, mapped
+        // onto the neighbour's whole edge.
+        let (from, to) = self.edges[idx];
         let frac = along(&self.screen, side, x, y);
+        if frac < from || frac > to {
+            return vec![];
+        }
+        let frac = ((frac - from) / (to - from).max(f64::EPSILON)).clamp(0.0, 1.0);
         let (ex, ey) = entry_point(side, frac, w as i32, h as i32);
         self.state = State::Remote { idx, x: ex as i64, y: ey as i64, w: w as i64, h: h as i64 };
         self.held.clear();
@@ -210,7 +234,10 @@ impl Session {
         self.state = State::Local;
         self.held.clear();
         let (wx, wy) = match frac {
-            Some(f) => return_point(&self.screen, self.sides[idx], f),
+            Some(f) => {
+                let (from, to) = self.edges[idx];
+                return_point(&self.screen, self.sides[idx], from + f * (to - from))
+            }
             None => self.screen.center(),
         };
         vec![Action::Send(idx, Msg::Leave), Action::Grab(false), Action::Warp(wx, wy)]
@@ -307,6 +334,21 @@ mod tests {
         assert!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: false }).is_empty(), "edge closed");
         s.on_input(Input::Pos { x: 1000, y: 540, pressed: false });
         assert_eq!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: false })[0], Action::Grab(true));
+    }
+
+    #[test]
+    fn a_smaller_neighbour_faces_part_of_the_edge() {
+        // 2560×1440 neighbour on the lower half of the right edge (y 540..1079).
+        let mut s = session();
+        s.set_edge(0, 0.5, 1.0);
+        assert!(s.on_input(Input::Pos { x: 1919, y: 200, pressed: false }).is_empty(), "upper half leads nowhere");
+        let a = s.on_input(Input::Pos { x: 1919, y: 540, pressed: false });
+        let Action::Send(0, Msg::Enter { x: 0, y }) = a[1] else { panic!("{a:?}") };
+        assert!(y <= 1, "top of the range = top of the neighbour, got y = {y}");
+        // Coming back from the neighbour's bottom lands at the bottom of the range.
+        s.on_input(Input::Delta { dx: 0, dy: 1439 });
+        let back = s.on_input(Input::Delta { dx: -1, dy: 0 });
+        assert!(matches!(back.last(), Some(Action::Warp(_, 1079))), "{back:?}");
     }
 
     #[test]
