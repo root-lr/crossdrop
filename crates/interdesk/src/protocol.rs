@@ -56,6 +56,9 @@ pub enum Msg {
     },
     /// The cursor went back to the source: release everything.
     Leave,
+    /// Target → source, answering `Enter`: another source is driving this
+    /// target; take the cursor back.
+    Busy,
 }
 
 /// One wheel notch in [`Msg::Wheel`] units.
