@@ -68,7 +68,7 @@ async fn run(cli: Cli) -> Result<()> {
             let devices = Client::connect(paths.clone()).await?.devices().await?;
             let found = find_paired(&devices, &device)?;
             let mut layout = Layout::load(&file)?;
-            layout.set(&found.name, side);
+            layout.place(&found.name, &found.id, side);
             layout.save(&file)?;
             println!("{} is now on the {side} of this screen.", found.name);
             println!("On {}, allow this device to control it: crossdrop allow <this device> input", found.name);

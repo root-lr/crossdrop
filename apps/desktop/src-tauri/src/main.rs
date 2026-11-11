@@ -42,7 +42,8 @@ struct App {
     sharing: Mutex<Option<Sharing>>,
     transfers: AtomicU64,
     /// Device behind each drop zone, by side.
-    zones: Mutex<Vec<(Side, String)>>,
+    /// (side, device to send to, name to show).
+    zones: Mutex<Vec<(Side, String, String)>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -66,6 +67,7 @@ struct Me {
 struct Neighbor {
     device: String,
     side: Side,
+    id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -96,7 +98,7 @@ async fn overview(app: State<'_, App>) -> Res<Overview> {
         devices: c.devices().await.map_err(err)?,
         pairs: c.pair_requests().await.map_err(err)?,
         offers: c.offers().await.map_err(err)?,
-        layout: layout.neighbors.into_iter().map(|n| Neighbor { device: n.device, side: n.side }).collect(),
+        layout: layout.neighbors.into_iter().map(|n| Neighbor { device: n.device, side: n.side, id: n.id }).collect(),
         layout_error,
         sharing: app.sharing.lock().unwrap().is_some(),
         embedded: app.daemon.lock().unwrap().is_some(),
@@ -266,7 +268,14 @@ async fn layout_set(handle: AppHandle, app: State<'_, App>, side: Side, device: 
     let file = interdesk::layout_path(&app.paths);
     let mut layout = Layout::load(&file).map_err(err)?;
     match device {
-        Some(d) => layout.set(&d, side),
+        Some(d) => {
+            // Keep the id too, so a renamed device stays on the desk.
+            let devices = client(&app).await?.devices().await.map_err(err)?;
+            match devices.iter().find(|x| x.paired && (x.id == d || x.name.eq_ignore_ascii_case(&d))) {
+                Some(x) => layout.place(&x.name, &x.id, side),
+                None => layout.set(&d, side),
+            }
+        }
         None => layout.neighbors.retain(|n| n.side != side),
     }
     layout.save(&file).map_err(err)?;
@@ -411,7 +420,7 @@ fn refresh_zones(handle: &AppHandle, app: &App) -> Res<()> {
             .map_err(err)?;
         let _ = window.set_position(pos);
         let _ = window.set_size(size);
-        zones.push((n.side, n.device));
+        zones.push((n.side, n.target().to_string(), n.device.clone()));
     }
     Ok(())
 }
@@ -422,7 +431,9 @@ fn on_zone_event(window: &tauri::Window, event: &WindowEvent) {
     let handle = window.app_handle();
     let app = handle.state::<App>();
     let label = window.label().trim_start_matches("dz-").to_string();
-    let Some((side, device)) = app.zones.lock().unwrap().iter().find(|(s, _)| side_name(*s) == label).cloned() else {
+    let Some((side, device, name)) =
+        app.zones.lock().unwrap().iter().find(|(s, _, _)| side_name(*s) == label).cloned()
+    else {
         return;
     };
     let open = matches!(drag, DragDropEvent::Enter { .. } | DragDropEvent::Over { .. });
@@ -436,7 +447,7 @@ fn on_zone_event(window: &tauri::Window, event: &WindowEvent) {
         let base = app.paths.clone();
         let handle = handle.clone();
         let paths = paths.into_iter().map(PathBuf::from).collect();
-        tauri::async_runtime::spawn(transfer(handle, base, id, device, None, paths, true));
+        tauri::async_runtime::spawn(transfer(handle, base, id, device, Some(name), paths, true));
     }
 }
 

@@ -52,7 +52,7 @@ pub async fn run(
     let (link_tx, mut links) = unbounded_channel();
     for (idx, n) in layout.neighbors.iter().enumerate() {
         info!(device = %n.device, side = %n.side, "neighbour");
-        tasks.push(tokio::spawn(keep_linked(paths.clone(), idx, n.device.clone(), link_tx.clone())));
+        tasks.push(tokio::spawn(keep_linked(paths.clone(), idx, n.target().to_string(), link_tx.clone())));
     }
     drop(link_tx);
 
