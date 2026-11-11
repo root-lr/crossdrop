@@ -62,14 +62,13 @@ jobs:
           git commit -m "crossdrop ${TAG#v}"
           git push origin HEAD
 
-  # Installs from the tap like a user would, on a clean Mac.
+  # Installs from the tap like a user would, on a clean Mac. A fully qualified
+  # name taps root-lr/homebrew-crossdrop and trusts the formula or cask on its
+  # own: no `brew tap` or `brew trust` to run first.
   check:
     needs: update
     runs-on: macos-latest
     steps:
-      - run: brew tap root-lr/crossdrop
-      # Homebrew refuses to load formulae from a third-party tap until it is trusted.
-      - run: brew trust root-lr/crossdrop
       - run: brew install root-lr/crossdrop/crossdrop
       - run: brew test crossdrop
       - run: crossdrop --version && interdesk --version && crossdropd --version

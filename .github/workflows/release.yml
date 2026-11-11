@@ -111,8 +111,6 @@ jobs:
             Desktop app: the installer for your system below.
             Command line (crossdrop, crossdropd, interdesk): the `crossdrop-cli-*` archive, or Homebrew:
             ```
-            brew tap root-lr/crossdrop
-            brew trust root-lr/crossdrop
             brew install root-lr/crossdrop/crossdrop
             brew install --cask root-lr/crossdrop/crossdrop-app
             ```
