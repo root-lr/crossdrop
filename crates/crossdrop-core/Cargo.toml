@@ -14,7 +14,7 @@ categories = ["network-programming", "cryptography"]
 [dependencies]
 anyhow = "1.0.104"
 blake3 = "1.8.7"
-crossdrop-proto = { version = "0.4.0", path = "../crossdrop-proto" }
+crossdrop-proto = { version = "0.4.1", path = "../crossdrop-proto" }
 data-encoding = "2.11.1"
 mdns-sd = "0.21.7"
 quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
