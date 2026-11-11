@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["crossdrop", "quic", "tls", "mdns", "p2p"]
+categories = ["network-programming", "cryptography"]
 
 [dependencies]
 anyhow = "1.0.104"

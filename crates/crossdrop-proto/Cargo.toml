@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["crossdrop", "protocol", "quic", "ipc"]
+categories = ["network-programming"]
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
