@@ -29,11 +29,22 @@ export interface Offer {
   preview: string[];
 }
 
+export interface Receiving {
+  transfer_id: string;
+  peer_name: string;
+  files: number;
+  total_bytes: number;
+  received_bytes: number;
+  current: string;
+}
+
 export interface Overview {
   me: { id: string; name: string; port: number };
   devices: Device[];
   pairs: PairRequest[];
   offers: Offer[];
+  /** Accepted transfers arriving now. */
+  receiving: Receiving[];
   /** `id` is set for devices placed since ids are kept. */
   layout: { device: string; side: Side; id: string | null }[];
   /** interdesk.toml could not be read: why. */
