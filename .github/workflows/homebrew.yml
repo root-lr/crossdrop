@@ -53,6 +53,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - run: brew tap root-lr/crossdrop https://github.com/root-lr/crossdrop
+      # Homebrew refuses to load formulae from a third-party tap until it is trusted.
+      - run: brew trust root-lr/crossdrop
       - run: brew install crossdrop
       - run: brew test crossdrop
       - run: crossdrop --version && interdesk --version && crossdropd --version
