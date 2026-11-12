@@ -12,6 +12,7 @@ import {
   type Challenge,
   type Device,
   type Overview,
+  type Receiving,
   type Side,
   type Transfer,
 } from "./api";
@@ -316,19 +317,11 @@ export default function App() {
           )}
           <ul className="transfers">
             {data.receiving.map((r) => (
-              <li key={r.transfer_id || `${r.peer_name}:${r.total_bytes}`}>
-                <div className="transfer-head">
-                  <span>
-                    From <strong>{r.peer_name}</strong>
-                  </span>
-                  <span className="state sending">Receiving</span>
-                </div>
-                <progress max={r.total_bytes || 1} value={r.received_bytes} />
-                <small>
-                  {r.files} {r.files === 1 ? "file" : "files"}, {bytes(r.received_bytes)} of {bytes(r.total_bytes)}
-                  {r.current ? `: ${r.current}` : ""}
-                </small>
-              </li>
+              <ReceivingItem
+                key={r.transfer_id || `${r.peer_name}:${r.total_bytes}`}
+                transfer={r}
+                onCancel={() => act(() => api.receivingCancel(r.transfer_id))}
+              />
             ))}
             {list.map((t) => (
               <li key={t.id}>
@@ -364,6 +357,45 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+/** A transfer arriving now, which can be stopped (after a confirmation,
+ * since what it stored is deleted). */
+function ReceivingItem({ transfer: r, onCancel }: { transfer: Receiving; onCancel: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <li>
+      <div className="transfer-head">
+        <span>
+          From <strong>{r.peer_name}</strong>
+        </span>
+        <span className="state sending">Receiving</span>
+      </div>
+      <progress max={r.total_bytes || 1} value={r.received_bytes} />
+      <small>
+        {r.files} {r.files === 1 ? "file" : "files"}, {bytes(r.received_bytes)} of {bytes(r.total_bytes)}
+        {r.current ? `: ${r.current}` : ""}
+      </small>
+      {r.transfer_id &&
+        (confirming ? (
+          <div className="transfer-actions">
+            <span>Stop and delete what arrived?</span>
+            <button className="link" onClick={onCancel}>
+              Stop
+            </button>
+            <button className="link quiet" onClick={() => setConfirming(false)}>
+              Keep receiving
+            </button>
+          </div>
+        ) : (
+          <div className="transfer-actions">
+            <button className="link quiet" onClick={() => setConfirming(true)}>
+              Cancel
+            </button>
+          </div>
+        ))}
+    </li>
   );
 }
 

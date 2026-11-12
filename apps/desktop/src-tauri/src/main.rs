@@ -143,6 +143,12 @@ async fn offer_answer(app: State<'_, App>, offer_id: String, accept: bool) -> Re
     client(&app).await?.offer_answer(&offer_id, accept).await.map_err(err)
 }
 
+/// Stops receiving a transfer and deletes what it stored so far.
+#[tauri::command]
+async fn receiving_cancel(app: State<'_, App>, transfer_id: String) -> Res<()> {
+    client(&app).await?.cancel_receiving(&transfer_id).await.map_err(err)
+}
+
 #[tauri::command]
 async fn set_permission(app: State<'_, App>, device: String, service: String, allow: bool) -> Res<()> {
     client(&app).await?.set_permission(&device, &service, allow).await.map_err(err)
@@ -541,6 +547,7 @@ fn main() {
             pair_confirm,
             pair_answer,
             offer_answer,
+            receiving_cancel,
             set_permission,
             set_auto_accept,
             set_clipboard_send,
