@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::layout::Rect;
+use crate::layout::{Rect, Side};
 use crate::protocol::Button;
 use crate::session::Input;
 
@@ -61,6 +61,11 @@ pub trait Platform: Send + Sync {
 
     /// Moves the local cursor (source side).
     fn warp(&self, x: i32, y: i32);
+
+    /// The edges of this screen that lead to a neighbour, given once before
+    /// any input. Backends that must ask the system to watch the edges
+    /// (Wayland) need it; the others watch the cursor everywhere.
+    fn set_edges(&self, _sides: &[Side]) {}
 
     // Injection (target side). `x`, `y` are relative to `screen()`'s origin.
     fn move_to(&self, x: i32, y: i32);
