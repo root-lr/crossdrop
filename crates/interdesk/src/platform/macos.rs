@@ -132,7 +132,37 @@ fn translate(kind: CGEventType, event: &CGEvent, grabbed: bool) -> Option<Input>
     }
 }
 
+/// Lets this process hide the cursor although it is not the frontmost
+/// application. Without it, macOS shows the cursor again at the next mouse
+/// move: while driving a neighbour, the Mac's cursor reappeared, frozen at
+/// the edge. Private but long-stable window-server call, used by Barrier and
+/// Synergy for the same reason.
+fn allow_hiding_cursor_in_background() {
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::string::CFString;
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn _CGSDefaultConnection() -> i32;
+        fn CGSSetConnectionProperty(cid: i32, target: i32, key: *const c_void, value: *const c_void) -> i32;
+    }
+    let key = CFString::from_static_string("SetsCursorInBackground");
+    // SAFETY: plain window-server calls on our own connection, with valid CF objects.
+    let err = unsafe {
+        let cid = _CGSDefaultConnection();
+        CGSSetConnectionProperty(
+            cid,
+            cid,
+            key.as_concrete_TypeRef().cast(),
+            CFBoolean::true_value().as_concrete_TypeRef().cast(),
+        )
+    };
+    if err != 0 {
+        warn!("cannot keep the cursor hidden while driving a neighbour (error {err})");
+    }
+}
+
 pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
+    allow_hiding_cursor_in_background();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<bool>();
     std::thread::Builder::new().name("interdesk-tap".into()).spawn(move || {
         use CGEventType::*;

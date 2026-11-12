@@ -4,6 +4,8 @@
 
 use std::collections::HashSet;
 
+use tracing::debug;
+
 use crate::keymap::Hotkey;
 use crate::layout::{along, edge_at, entry_point, return_point, Rect, Side};
 use crate::protocol::{Button, Msg};
@@ -131,6 +133,7 @@ impl Session {
             *s = None;
         }
         if self.remote() == Some(idx) {
+            debug!(idx, "back: the link to the neighbour dropped");
             return self.come_back(None);
         }
         vec![]
@@ -163,6 +166,7 @@ impl Session {
         }
         let frac = ((frac - from) / (to - from).max(f64::EPSILON)).clamp(0.0, 1.0);
         let (ex, ey) = entry_point(side, frac, w as i32, h as i32);
+        debug!(idx, %side, x, y, screen = ?self.screen, enter_x = ex, enter_y = ey, "crossing");
         self.state = State::Remote { idx, x: ex as i64, y: ey as i64, w: w as i64, h: h as i64 };
         self.held.clear();
         vec![Action::Grab(true), Action::Send(idx, Msg::Enter { x: ex, y: ey })]
@@ -183,6 +187,7 @@ impl Session {
                     Side::Top => ny >= h,
                 };
                 if back {
+                    debug!(idx, dx, dy, from_x = *x, from_y = *y, w, h, "back: crossed the edge facing this screen");
                     let frac = match self.sides[idx] {
                         Side::Left | Side::Right => ny as f64 / (h - 1).max(1) as f64,
                         Side::Top | Side::Bottom => nx as f64 / (w - 1).max(1) as f64,
@@ -202,6 +207,7 @@ impl Session {
                     self.held.remove(&key);
                 }
                 if down && self.return_key.matches(key, &self.held) {
+                    debug!("back: return key");
                     // Emergency exit: take control back right now.
                     return self.come_back(None);
                 }
@@ -219,6 +225,7 @@ impl Session {
         if self.remote() != Some(idx) {
             return vec![];
         }
+        debug!(idx, "back: the neighbour is driven by another computer");
         let actions = self.come_back(None);
         self.edge_blocked = true;
         actions
