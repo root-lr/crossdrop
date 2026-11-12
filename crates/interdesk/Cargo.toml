@@ -25,6 +25,12 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 x11rb = { version = "0.14.0", features = ["xtest"] }
+# Wayland: RemoteDesktop portal, then libei. ashpd 0.14 needs Rust 1.89.
+# (its remote_desktop feature does not build without screencast)
+ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "remote_desktop", "screencast"] }
+reis = { version = "0.7.1", features = ["tokio"] }
+futures-util = { version = "0.3", default-features = false }
+libc = "0.2.191"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_Threading"] }

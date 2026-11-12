@@ -61,7 +61,8 @@ It needs ctrl, alt or cmd, so that typing on the neighbour cannot trigger it.
 
 | OS | Capture | Injection | Notes |
 | --- | --- | --- | --- |
-| Linux, X11 | pointer polling + root grab | XTEST | Wayland sessions are not supported yet |
+| Linux, X11 | pointer polling + root grab | XTEST | |
+| Linux, Wayland | not yet: can be controlled, cannot control others | RemoteDesktop portal + libei | GNOME 45+ or KDE Plasma 6.1+; asks for permission once (remembered); `INTERDESK_BACKEND=x11` forces X11 |
 | Windows 10+ | low-level hooks | `SendInput` | per-monitor DPI aware; may not control elevated (admin) windows unless run as admin |
 | macOS 12+ | Quartz event tap | `CGEvent` | needs the **Accessibility** permission for the terminal or binary |
 

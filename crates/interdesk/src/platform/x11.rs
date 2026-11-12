@@ -6,8 +6,8 @@
 //!   into a delta.
 //! - Injection: XTEST fake input.
 //!
-//! Wayland sessions are not supported yet (they need the input-capture and
-//! remote-desktop portals); XWayland alone cannot capture global input.
+//! Wayland sessions use the Wayland backend instead: XWayland alone cannot
+//! capture or inject global input.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,9 +41,6 @@ struct X11 {
 
 pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
     if std::env::var_os("DISPLAY").is_none() {
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            bail!("Wayland sessions are not supported yet; log in with an X11 session (\"Xorg\")");
-        }
         bail!("no X11 display (DISPLAY is not set)");
     }
     let (conn, screen_num) = x11rb::connect(None).context("cannot connect to the X server")?;

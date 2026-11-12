@@ -10,9 +10,30 @@ use crate::protocol::Button;
 use crate::session::Input;
 
 #[cfg(all(unix, not(target_os = "macos")))]
-mod x11;
+mod wayland;
 #[cfg(all(unix, not(target_os = "macos")))]
-use x11 as native_impl;
+mod x11;
+
+/// Linux and other Unix desktops: Wayland when the session is Wayland (the
+/// X11 backend would only reach XWayland windows there), else X11.
+/// `INTERDESK_BACKEND=x11` or `=wayland` forces one.
+#[cfg(all(unix, not(target_os = "macos")))]
+mod native_impl {
+    use super::*;
+
+    pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
+        let wayland = match std::env::var("INTERDESK_BACKEND").as_deref() {
+            Ok("x11") => false,
+            Ok("wayland") => true,
+            _ => super::wayland::is_session(),
+        };
+        if wayland {
+            super::wayland::start(events)
+        } else {
+            super::x11::start(events)
+        }
+    }
+}
 
 #[cfg(windows)]
 mod windows;
