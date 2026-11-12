@@ -158,7 +158,8 @@ interdesk run                   # on both
 ```
 
 Push the cursor past alpha's right edge and it continues on bravo, keyboard
-included. Ctrl+Alt+Esc brings it back. Linux (X11), Windows and macOS. See
+included. Ctrl+Alt+Esc brings it back. Linux (X11; Wayland can be controlled
+but not control others yet), Windows and macOS. See
 [docs/interdesk.md](docs/interdesk.md).
 
 ## How it works
