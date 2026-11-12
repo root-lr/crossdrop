@@ -62,7 +62,7 @@ It needs ctrl, alt or cmd, so that typing on the neighbour cannot trigger it.
 | OS | Capture | Injection | Notes |
 | --- | --- | --- | --- |
 | Linux, X11 | pointer polling + root grab | XTEST | |
-| Linux, Wayland | InputCapture portal: barriers on the edges that have a neighbour, then libei | RemoteDesktop portal + libei | GNOME 45+ or KDE Plasma 6.1+. Being controlled asks for permission once (remembered); controlling others may ask again at each start. Restart interdesk after changing monitors or the layout. `INTERDESK_BACKEND=x11` forces X11 |
+| Linux, Wayland | InputCapture portal: barriers on the edges that have a neighbour, then libei | RemoteDesktop portal + libei | GNOME 45+ or KDE Plasma 6.1+. Being controlled asks for permission once (remembered); controlling others asks again at each start (GNOME 46: its InputCapture portal cannot remember the permission). Restart interdesk after changing monitors or the layout. `INTERDESK_BACKEND=x11` forces X11 |
 | Windows 10+ | low-level hooks | `SendInput` | per-monitor DPI aware; may not control elevated (admin) windows unless run as admin |
 | macOS 12+ | Quartz event tap | `CGEvent` | needs the **Accessibility** permission for the terminal or binary |
 
