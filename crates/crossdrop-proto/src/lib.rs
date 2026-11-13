@@ -40,6 +40,10 @@ pub mod services {
     pub const FILES: &str = "crossdrop/files";
     /// Built-in clipboard sharing.
     pub const CLIPBOARD: &str = "crossdrop/clipboard";
+    /// Images copied to the clipboard: a [`crate::wire::ClipboardImage`] header,
+    /// then the PNG bytes. Allowed together with [`CLIPBOARD`]. A separate
+    /// service so that devices without image support simply refuse it.
+    pub const CLIPBOARD_IMAGE: &str = "crossdrop/clipboard-image";
     /// interdesk's input service. A device allowed to drive this one may
     /// also drop files on its desktop without asking.
     pub const INTERDESK_INPUT: &str = "interdesk/input";
@@ -218,6 +222,15 @@ pub mod wire {
     pub struct Clipboard {
         pub text: String,
     }
+
+    /// Header of a clipboard image; `size` bytes of PNG follow, then the
+    /// receiver answers with a `ChannelReply`.
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct ClipboardImage {
+        pub width: u32,
+        pub height: u32,
+        pub size: u64,
+    }
 }
 
 /// Messages between the local daemon and its clients.
@@ -298,23 +311,70 @@ pub mod ipc {
         },
         /// Last clipboard text received from another device.
         ClipboardGet,
+        /// Put a PNG file in the clipboard of one device, or of every device
+        /// this device shares its clipboard with.
+        ClipboardSendImage {
+            path: String,
+            device: Option<String>,
+        },
+        /// Save the last clipboard image received from another device as PNG.
+        ClipboardGetImage {
+            path: String,
+        },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok,
-        Error { message: String },
-        Status { device_id: String, name: String, port: u16, version: String },
-        Devices { devices: Vec<DeviceInfo> },
-        PairChallenge { pair_id: String, sas: String, peer_id: String, peer_name: String },
-        PairResult { paired: bool, peer_id: String, peer_name: String },
-        PairRequests { requests: Vec<PairRequestInfo> },
-        ChannelReady { channel_id: String },
-        Offers { offers: Vec<OfferInfo> },
-        Receiving { transfers: Vec<ReceivingInfo> },
-        Sent { count: u32 },
-        Clipboard { text: Option<String>, from: Option<String> },
+        Error {
+            message: String,
+        },
+        Status {
+            device_id: String,
+            name: String,
+            port: u16,
+            version: String,
+        },
+        Devices {
+            devices: Vec<DeviceInfo>,
+        },
+        PairChallenge {
+            pair_id: String,
+            sas: String,
+            peer_id: String,
+            peer_name: String,
+        },
+        PairResult {
+            paired: bool,
+            peer_id: String,
+            peer_name: String,
+        },
+        PairRequests {
+            requests: Vec<PairRequestInfo>,
+        },
+        ChannelReady {
+            channel_id: String,
+        },
+        Offers {
+            offers: Vec<OfferInfo>,
+        },
+        Receiving {
+            transfers: Vec<ReceivingInfo>,
+        },
+        Sent {
+            count: u32,
+        },
+        Clipboard {
+            text: Option<String>,
+            from: Option<String>,
+        },
+        /// `width` is 0 when no image was received.
+        ClipboardImage {
+            width: u32,
+            height: u32,
+            from: Option<String>,
+        },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

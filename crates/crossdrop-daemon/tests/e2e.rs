@@ -312,6 +312,41 @@ async fn clipboard_can_flow_one_way() {
 }
 
 #[tokio::test]
+async fn clipboard_images_reach_the_other_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = daemon(dir.path(), "alpha").await;
+    let b = daemon(dir.path(), "bravo").await;
+    pair(&a, &b).await;
+    client(&b).await.set_permission("alpha", "crossdrop/clipboard", true).await.unwrap();
+
+    // A 3×2 RGBA image.
+    let rgba: Vec<u8> = (0..24u8).map(|i| i.wrapping_mul(41)).collect();
+    let src = dir.path().join("shot.png");
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, 3, 2);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.write_header().unwrap().write_image_data(&rgba).unwrap();
+    std::fs::write(&src, &png).unwrap();
+
+    assert!(client(&b).await.clipboard_get_image(&dir.path().join("none.png")).await.unwrap().is_none());
+    assert_eq!(client(&a).await.clipboard_send_image(&src, Some("bravo")).await.unwrap(), 1);
+    let out = dir.path().join("got.png");
+    let got = client(&b).await.clipboard_get_image(&out).await.unwrap();
+    assert_eq!(got, Some((3, 2, "alpha".to_string())));
+    let mut reader = png::Decoder::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(pixels, rgba);
+
+    // Not an image: refused before anything is sent.
+    std::fs::write(dir.path().join("fake.png"), "hello").unwrap();
+    let err = client(&a).await.clipboard_send_image(&dir.path().join("fake.png"), Some("bravo")).await.unwrap_err();
+    assert!(err.to_string().contains("PNG"), "{err}");
+    a.shutdown();
+    b.shutdown();
+}
+
+#[tokio::test]
 async fn oversized_clipboard_text_is_refused_clearly() {
     let dir = tempfile::tempdir().unwrap();
     let a = daemon(dir.path(), "alpha").await;

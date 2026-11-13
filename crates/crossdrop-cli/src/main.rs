@@ -161,14 +161,22 @@ enum Command {
 
 #[derive(Subcommand)]
 enum Clip {
-    /// Send text (argument or standard input) to one device, or to every clipboard peer.
+    /// Send text (argument or standard input), or a PNG image, to one
+    /// device, or to every clipboard peer.
     Send {
         text: Option<String>,
         #[arg(long, short)]
         to: Option<String>,
+        /// Send this PNG image instead of text.
+        #[arg(long, value_name = "FILE.png", conflicts_with = "text")]
+        image: Option<PathBuf>,
     },
-    /// Print the last text another device shared.
-    Get,
+    /// Print the last text another device shared (`--image FILE.png`: save
+    /// the last image instead).
+    Get {
+        #[arg(long, value_name = "FILE.png")]
+        image: Option<PathBuf>,
+    },
     /// Send this device's copies to a device (`--off` to stop), whether or
     /// not it may write to this clipboard. By default copies go to the
     /// devices allowed `clipboard`.
@@ -498,7 +506,14 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Command::Clip(Clip::Send { text, to }) => {
+        Command::Clip(Clip::Send { image: Some(image), to, .. }) => {
+            // The daemon reads the file: it does not share our directory.
+            let path = std::path::absolute(&image)?;
+            let n = connect().await?.clipboard_send_image(&path, to.as_deref()).await?;
+            outln!("Shared the image with {n} device(s).");
+        }
+
+        Command::Clip(Clip::Send { text, to, image: None }) => {
             let text = match text {
                 Some(t) => t,
                 None => {
@@ -514,7 +529,15 @@ async fn run(cli: Cli) -> Result<()> {
             outln!("Shared with {n} device(s).");
         }
 
-        Command::Clip(Clip::Get) => match connect().await?.clipboard_get().await? {
+        Command::Clip(Clip::Get { image: Some(image) }) => {
+            let path = std::path::absolute(&image)?;
+            match connect().await?.clipboard_get_image(&path).await? {
+                Some((w, h, from)) => outln!("Saved the {w}×{h} image from {from} to {}.", image.display()),
+                None => bail!("no image received yet"),
+            }
+        }
+
+        Command::Clip(Clip::Get { image: None }) => match connect().await?.clipboard_get().await? {
             Some((text, _from)) => out!("{text}"),
             None => bail!("nothing received yet"),
         },
