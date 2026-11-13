@@ -40,7 +40,7 @@ pub mod services {
     pub const FILES: &str = "crossdrop/files";
     /// Built-in clipboard sharing.
     pub const CLIPBOARD: &str = "crossdrop/clipboard";
-    /// Images copied to the clipboard: a [`wire::ClipboardImage`] header,
+    /// Images copied to the clipboard: a [`crate::wire::ClipboardImage`] header,
     /// then the PNG bytes. Allowed together with [`CLIPBOARD`]. A separate
     /// service so that devices without image support simply refuse it.
     pub const CLIPBOARD_IMAGE: &str = "crossdrop/clipboard-image";
