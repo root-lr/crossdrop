@@ -101,15 +101,3 @@ export const api = {
 export function shortId(id: string): string {
   return id.slice(0, 9);
 }
-
-/** A size in binary units (1 KiB = 1024 B), named as such. */
-export function bytes(n: number): string {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let v = n;
-  let u = 0;
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024;
-    u++;
-  }
-  return u === 0 ? `${n} B` : `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
-}
