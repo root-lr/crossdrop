@@ -4,9 +4,9 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { bytes, t } from "./i18n";
 import {
   api,
-  bytes,
   shortId,
   SERVICES,
   type Challenge,
@@ -18,7 +18,6 @@ import {
 } from "./api";
 
 const SIDES: Side[] = ["top", "left", "right", "bottom"];
-const SIDE_LABEL: Record<Side, string> = { top: "Above", left: "Left", right: "Right", bottom: "Below" };
 
 function useOverview() {
   const [data, setData] = useState<Overview | null>(null);
@@ -64,7 +63,7 @@ export default function App() {
   const act = useAct(refresh, setNotice);
 
   useEffect(() => {
-    const un = listen<Transfer>("transfer", (e) => setTransfers((t) => ({ ...t, [e.payload.id]: e.payload })));
+    const un = listen<Transfer>("transfer", (e) => setTransfers((all) => ({ ...all, [e.payload.id]: e.payload })));
     return () => {
       un.then((f) => f());
     };
@@ -104,7 +103,7 @@ export default function App() {
   if (!data) {
     return (
       <main className="boot">
-        <p>{error ? `crossdrop is not reachable: ${error}` : "Starting crossdrop…"}</p>
+        <p>{error ? t.unreachable(error) : t.starting}</p>
       </main>
     );
   }
@@ -119,7 +118,7 @@ export default function App() {
   const list = Object.values(transfers).sort((a, b) => b.id - a.id);
 
   const sendWithPicker = async (device: Device) => {
-    const picked = await open({ multiple: true, title: `Send to ${device.name}` });
+    const picked = await open({ multiple: true, title: t.sendTo(device.name) });
     const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
     if (paths.length) act(() => api.sendFiles(device.id, paths, false, device.name));
   };
@@ -142,16 +141,15 @@ export default function App() {
           />
           <span className="track" aria-hidden />
           <span>
-            Share mouse and keyboard
-            <small>{data.sharing ? `Push the cursor past an edge to switch. ${data.return_key} comes back.` : "Off"}</small>
+            {t.shareInput}
+            <small>{data.sharing ? t.shareOn(data.return_key) : t.off}</small>
           </span>
         </label>
       </header>
 
       {data.layout_error && (
         <div className="notice" role="alert">
-          The desk layout could not be read, so no neighbour is shown: {data.layout_error}. Fix or delete the file,
-          then place your devices again.
+          {t.layoutError(data.layout_error)}
         </div>
       )}
 
@@ -159,13 +157,13 @@ export default function App() {
         <div className="notice" role="alert">
           {notice ?? error}
           <button className="link" onClick={() => setNotice(null)}>
-            Dismiss
+            {t.dismiss}
           </button>
         </div>
       )}
 
       <div className="columns">
-        <section className="desk" aria-label="Your desk">
+        <section className="desk" aria-label={t.desk}>
           <div className="desk-grid">
             {SIDES.map((side) => {
               const entry = bySide[side];
@@ -184,24 +182,24 @@ export default function App() {
                       data-drop={drop}
                     >
                       <strong>{name}</strong>
-                      <span>{dev?.online ? "Drop files here" : "Offline"}</span>
+                      <span>{dev?.online ? t.dropHere : t.offline}</span>
                       <button
                         className="link quiet"
                         onClick={() => act(() => api.layoutSet(side, null))}
-                        aria-label={`Remove ${name} from the ${side} side`}
+                        aria-label={t.removeFrom(name, t.sideIn[side])}
                       >
-                        Remove
+                        {t.remove}
                       </button>
                     </div>
                   ) : (
                     <label className="empty">
-                      <span>{SIDE_LABEL[side]}</span>
+                      <span>{t.side[side]}</span>
                       <select
                         value=""
                         disabled={paired.length === 0}
                         onChange={(e) => e.target.value && act(() => api.layoutSet(side, e.target.value))}
                       >
-                        <option value="">{paired.length ? "Choose…" : "Pair one first"}</option>
+                        <option value="">{paired.length ? t.choose : t.pairFirst}</option>
                         {paired
                           .filter((d) => !placed.has(d.name.toLowerCase()) && !placed.has(d.id))
                           .map((d) => (
@@ -218,18 +216,15 @@ export default function App() {
             <div className="slot slot-center">
               <div className="screen">
                 <strong>{data.me.name}</strong>
-                <span>This computer</span>
+                <span>{t.thisComputer}</span>
               </div>
             </div>
           </div>
-          <p className="hint">
-            Put each computer where it sits on your desk. With sharing on, the cursor crosses that edge; drag a file to
-            the edge of the screen to drop it on that computer's desktop.
-          </p>
+          <p className="hint">{t.deskHint}</p>
 
-          <h2>Devices</h2>
+          <h2>{t.devices}</h2>
           {paired.length === 0 && (
-            <p className="hint">No paired device yet. Computers running crossdrop on this network appear below.</p>
+            <p className="hint">{t.noPaired}</p>
           )}
           <ul className="devices">
             {paired.map((d) => (
@@ -243,7 +238,7 @@ export default function App() {
             ))}
           </ul>
 
-          <h2>Nearby</h2>
+          <h2>{t.nearby}</h2>
           <ul className="devices">
             {nearby.map((d) => (
               <li key={d.id} className="device">
@@ -252,7 +247,7 @@ export default function App() {
                   <strong>{d.name}</strong>
                   <span className="id">{shortId(d.id)}</span>
                   <button className="primary" onClick={() => act(async () => setPairing(await api.pairStart(d.id)))}>
-                    Pair
+                    {t.pair}
                   </button>
                 </div>
               </li>
@@ -262,58 +257,53 @@ export default function App() {
         </section>
 
         <aside className="side">
-          <h2>Waiting for you</h2>
-          {data.pairs.length === 0 && data.offers.length === 0 && <p className="hint">Nothing waiting.</p>}
+          <h2>{t.waitingForYou}</h2>
+          {data.pairs.length === 0 && data.offers.length === 0 && <p className="hint">{t.nothingWaiting}</p>}
           {data.pairs.map((r) => (
             <div key={r.pair_id} className="request">
-              <p>
-                <strong>{r.peer_name}</strong> wants to pair. Check that it shows this code:
-              </p>
+              <p>{t.wantsToPair(<strong>{r.peer_name}</strong>)}</p>
               <p className="code">{r.sas}</p>
               <div className="actions">
                 <button className="primary" onClick={() => act(() => api.pairAnswer(r.pair_id, true))}>
-                  Codes match, pair
+                  {t.codesMatchPair}
                 </button>
-                <button onClick={() => act(() => api.pairAnswer(r.pair_id, false))}>Reject</button>
+                <button onClick={() => act(() => api.pairAnswer(r.pair_id, false))}>{t.reject}</button>
               </div>
             </div>
           ))}
           {data.offers.map((o) => (
             <div key={o.offer_id} className="request">
-              <p>
-                <strong>{o.peer_name}</strong> wants to send {o.files} {o.files === 1 ? "file" : "files"},{" "}
-                {bytes(o.total_bytes)}
-              </p>
+              <p>{t.wantsToSend(<strong>{o.peer_name}</strong>, t.files(o.files), bytes(o.total_bytes))}</p>
               <p className="files">
                 {o.preview.join(", ")}
                 {o.files > o.preview.length ? ", …" : ""}
               </p>
               <div className="actions">
                 <button className="primary" onClick={() => act(() => api.offerAnswer(o.offer_id, true))}>
-                  Receive
+                  {t.receive}
                 </button>
-                <button onClick={() => act(() => api.offerAnswer(o.offer_id, false))}>Decline</button>
+                <button onClick={() => act(() => api.offerAnswer(o.offer_id, false))}>{t.decline}</button>
               </div>
             </div>
           ))}
 
           <div className="transfers-head">
-            <h2>Transfers</h2>
-            {list.some((t) => FINISHED.includes(t.state)) && (
+            <h2>{t.transfers}</h2>
+            {list.some((x) => FINISHED.includes(x.state)) && (
               <button
                 className="link quiet"
                 onClick={() =>
                   setTransfers((all) =>
-                    Object.fromEntries(Object.entries(all).filter(([, t]) => !FINISHED.includes(t.state))),
+                    Object.fromEntries(Object.entries(all).filter(([, x]) => !FINISHED.includes(x.state))),
                   )
                 }
               >
-                Clear finished
+                {t.clearFinished}
               </button>
             )}
           </div>
           {list.length === 0 && data.receiving.length === 0 && (
-            <p className="hint">Drop files on a device to send them.</p>
+            <p className="hint">{t.dropToSend}</p>
           )}
           <ul className="transfers">
             {data.receiving.map((r) => (
@@ -323,26 +313,26 @@ export default function App() {
                 onCancel={() => act(() => api.receivingCancel(r.transfer_id))}
               />
             ))}
-            {list.map((t) => (
-              <li key={t.id}>
+            {list.map((x) => (
+              <li key={x.id}>
                 <div className="transfer-head">
                   <span>
-                    To <strong>{t.device}</strong>
-                    {t.desktop ? " (desktop)" : ""}
+                    {t.to(<strong>{x.device}</strong>)}
+                    {x.desktop ? t.toDesktop : ""}
                   </span>
-                  <span className={`state ${t.state}`}>{STATE_TEXT[t.state]}</span>
+                  <span className={`state ${x.state}`}>{t.state[x.state]}</span>
                 </div>
-                <progress max={t.total || 1} value={t.state === "done" ? t.total || 1 : t.done} />
+                <progress max={x.total || 1} value={x.state === "done" ? x.total || 1 : x.done} />
                 <small>
-                  {t.files ? `${t.files} ${t.files === 1 ? "file" : "files"}, ` : ""}
-                  {bytes(t.done)} of {bytes(t.total)}
-                  {t.message ? `: ${t.message}` : ""}
+                  {x.files ? `${t.files(x.files)}, ` : ""}
+                  {t.progress(bytes(x.done), bytes(x.total))}
+                  {x.message ? `: ${x.message}` : ""}
                 </small>
               </li>
             ))}
           </ul>
 
-          <h2>This computer</h2>
+          <h2>{t.thisComputer}</h2>
           <StartAtLogin onError={setNotice} />
         </aside>
       </div>
@@ -368,30 +358,30 @@ function ReceivingItem({ transfer: r, onCancel }: { transfer: Receiving; onCance
     <li>
       <div className="transfer-head">
         <span>
-          From <strong>{r.peer_name}</strong>
+          {t.from(<strong>{r.peer_name}</strong>)}
         </span>
-        <span className="state sending">Receiving</span>
+        <span className="state sending">{t.receiving}</span>
       </div>
       <progress max={r.total_bytes || 1} value={r.received_bytes} />
       <small>
-        {r.files} {r.files === 1 ? "file" : "files"}, {bytes(r.received_bytes)} of {bytes(r.total_bytes)}
+        {t.files(r.files)}, {t.progress(bytes(r.received_bytes), bytes(r.total_bytes))}
         {r.current ? `: ${r.current}` : ""}
       </small>
       {r.transfer_id &&
         (confirming ? (
           <div className="transfer-actions">
-            <span>Stop and delete what arrived?</span>
+            <span>{t.stopAndDelete}</span>
             <button className="link" onClick={onCancel}>
-              Stop
+              {t.stop}
             </button>
             <button className="link quiet" onClick={() => setConfirming(false)}>
-              Keep receiving
+              {t.keepReceiving}
             </button>
           </div>
         ) : (
           <div className="transfer-actions">
             <button className="link quiet" onClick={() => setConfirming(true)}>
-              Cancel
+              {t.cancel}
             </button>
           </div>
         ))}
@@ -421,13 +411,13 @@ function useNotifyNewRequests(data: Overview | null) {
     const items = [
       ...data.pairs.map((r) => ({
         key: `pair:${r.pair_id}`,
-        title: `${r.peer_name} wants to pair`,
-        body: `Accept only if it shows the code ${r.sas}.`,
+        title: t.notifyPair(r.peer_name),
+        body: t.notifyPairBody(r.sas),
       })),
       ...data.offers.map((o) => ({
         key: `offer:${o.offer_id}`,
-        title: `${o.peer_name} wants to send you files`,
-        body: `${o.files} ${o.files === 1 ? "file" : "files"}, ${bytes(o.total_bytes)}: ${o.preview.join(", ")}`,
+        title: t.notifyOffer(o.peer_name),
+        body: `${t.files(o.files)}, ${bytes(o.total_bytes)}: ${o.preview.join(", ")}`,
       })),
     ];
     if (seen.current === null) {
@@ -441,14 +431,6 @@ function useNotifyNewRequests(data: Overview | null) {
     }
   }, [data]);
 }
-
-const STATE_TEXT: Record<Transfer["state"], string> = {
-  waiting: "Waiting for them to accept",
-  sending: "Sending",
-  done: "Sent",
-  declined: "Declined",
-  failed: "Failed",
-};
 
 function DeviceRow({
   device: d,
@@ -470,45 +452,45 @@ function DeviceRow({
       <div className="device-head">
         <span className={`dot ${d.online ? "on" : ""}`} aria-hidden />
         <strong>{d.name}</strong>
-        <span className="id">{d.online ? "Online" : "Offline"}</span>
+        <span className="id">{d.online ? t.online : t.offline}</span>
         <button className="primary" onClick={onSend}>
-          Send files…
+          {t.sendFiles}
         </button>
         <button onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? "Close" : "Settings"}
+          {open ? t.close : t.settings}
         </button>
       </div>
       {open && (
         <div className="settings">
           <Toggle checked={allows(SERVICES.files)} onChange={() => toggle(SERVICES.files)}>
-            May send me files
+            {t.maySendFiles}
           </Toggle>
           <Toggle checked={d.auto_accept} onChange={() => act(() => api.setAutoAccept(d.id, !d.auto_accept))}>
-            Receive its files without asking
+            {t.autoAccept}
           </Toggle>
           <Toggle checked={allows(SERVICES.clipboard)} onChange={() => toggle(SERVICES.clipboard)}>
-            Its copies reach my clipboard
+            {t.clipboardIn}
           </Toggle>
           <Toggle
             checked={d.clipboard_send}
             onChange={() => act(() => api.setClipboardSend(d.id, !d.clipboard_send))}
           >
-            My copies reach its clipboard
+            {t.clipboardOut}
           </Toggle>
           <Toggle checked={allows(SERVICES.input)} onChange={() => toggle(SERVICES.input)}>
-            May control this computer's mouse and keyboard
+            {t.mayControl}
           </Toggle>
           <p className="id">
             {d.id}
-            {d.addrs.length ? `, last seen at ${d.addrs[0]}` : ""}
+            {d.addrs.length ? t.lastSeen(d.addrs[0]) : ""}
           </p>
           <button
             className="danger"
             onClick={() => {
-              if (window.confirm(`Forget ${d.name}? You will need to pair again.`)) act(() => api.unpair(d.id));
+              if (window.confirm(t.forgetConfirm(d.name))) act(() => api.unpair(d.id));
             }}
           >
-            Forget {d.name}
+            {t.forget(d.name)}
           </button>
         </div>
       )}
@@ -533,7 +515,7 @@ function StartAtLogin({ onError }: { onError: (message: string) => void }) {
   };
   return (
     <Toggle checked={on} onChange={toggle}>
-      Open crossdrop when I log in, so that other devices can reach this one
+      {t.startAtLogin}
     </Toggle>
   );
 }
@@ -558,10 +540,10 @@ function PairByAddress({ onStart }: { onStart: (addr: string) => void }) {
         if (addr.trim()) onStart(addr.trim());
       }}
     >
-      <label htmlFor="addr">Not listed? Pair by address</label>
+      <label htmlFor="addr">{t.pairByAddress}</label>
       <div>
         <input id="addr" placeholder="192.168.1.20:47470" value={addr} onChange={(e) => setAddr(e.target.value)} />
-        <button type="submit">Pair</button>
+        <button type="submit">{t.pair}</button>
       </div>
     </form>
   );
@@ -584,7 +566,7 @@ function PairDialog({ challenge, onClose }: { challenge: Challenge; onClose: () 
       setStep("error");
     }
   };
-  const name = challenge.peer_name === "unknown" ? "the other computer" : challenge.peer_name;
+  const name = challenge.peer_name === "unknown" ? t.otherComputer : challenge.peer_name;
   // Escape cancels while the codes are compared, and closes the dialog
   // otherwise (an answer already sent keeps being waited for).
   const stepRef = useRef(step);
@@ -601,52 +583,52 @@ function PairDialog({ challenge, onClose }: { challenge: Challenge; onClose: () 
   return (
     <div className="backdrop">
       <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="pair-title">
-        <h2 id="pair-title">Pair with {name}</h2>
+        <h2 id="pair-title">{t.pairWith(name)}</h2>
         {step === "compare" && (
           <>
-            <p>Both computers show a code. Pair only if they are the same.</p>
+            <p>{t.compare}</p>
             <p className="code big">{challenge.code}</p>
             <div className="actions">
               <button className="primary" autoFocus onClick={() => confirm(true)}>
-                Codes match
+                {t.codesMatch}
               </button>
-              <button onClick={() => confirm(false)}>Cancel</button>
+              <button onClick={() => confirm(false)}>{t.cancel}</button>
             </div>
           </>
         )}
         {step === "waiting" && (
           <>
             <p className="code big">{challenge.code}</p>
-            <p>Now accept on {name}. Waiting…</p>
+            <p>{t.acceptOn(name)}</p>
             <div className="actions">
-              <button onClick={onClose}>Hide</button>
+              <button onClick={onClose}>{t.hide}</button>
             </div>
-            <p className="hint">Hiding keeps the request open: it completes if {name} accepts within two minutes.</p>
+            <p className="hint">{t.hideHint(name)}</p>
           </>
         )}
         {step === "paired" && (
           <>
-            <p>Paired with {name}. You can send it files right away.</p>
+            <p>{t.paired(name)}</p>
             <div className="actions">
               <button className="primary" autoFocus onClick={onClose}>
-                Done
+                {t.done}
               </button>
             </div>
           </>
         )}
         {step === "refused" && (
           <>
-            <p>{name} did not accept. Nothing was shared.</p>
+            <p>{t.refused(name)}</p>
             <div className="actions">
-              <button onClick={onClose}>Close</button>
+              <button onClick={onClose}>{t.close}</button>
             </div>
           </>
         )}
         {step === "error" && (
           <>
-            <p>Pairing stopped: {message}</p>
+            <p>{t.pairingStopped(message)}</p>
             <div className="actions">
-              <button onClick={onClose}>Close</button>
+              <button onClick={onClose}>{t.close}</button>
             </div>
           </>
         )}
