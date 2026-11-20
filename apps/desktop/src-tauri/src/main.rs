@@ -176,19 +176,20 @@ async fn set_clipboard_send(app: State<'_, App>, device: String, enabled: bool) 
 #[tauri::command]
 async fn unpair(handle: AppHandle, app: State<'_, App>, device: String) -> Res<()> {
     let mut c = client(&app).await?;
-    // The layout knows devices by name; `device` may be an id.
-    let name = c
+    // The layout knows a device by its id, or only by the name it had when
+    // placed (it may have been renamed since); `device` may be either.
+    let (id, name) = c
         .devices()
         .await
         .map_err(err)?
         .into_iter()
         .find(|d| d.id == device || d.name.eq_ignore_ascii_case(&device))
-        .map_or_else(|| device.clone(), |d| d.name);
+        .map_or_else(|| (device.clone(), device.clone()), |d| (d.id, d.name));
     c.unpair(&device).await.map_err(err)?;
     // A forgotten device leaves the desk too.
     let file = interdesk::layout_path(&app.paths);
     let mut layout = Layout::load(&file).map_err(err)?;
-    if layout.remove(&name) {
+    if layout.remove(&id) | layout.remove(&name) {
         layout.save(&file).map_err(err)?;
         after_layout_change(&handle, &app).await?;
     }
