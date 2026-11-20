@@ -65,6 +65,7 @@ const KEYS: &[(u16, u16, u16, u16)] = &[
 
 pub mod hid {
     pub const ESCAPE: u16 = 0x29;
+    pub const CAPS_LOCK: u16 = 0x39;
     pub const LEFT_CTRL: u16 = 0xE0;
     pub const LEFT_SHIFT: u16 = 0xE1;
     pub const LEFT_ALT: u16 = 0xE2;
@@ -107,7 +108,6 @@ const NAMED: &[(&str, u16)] = &[
     ("end", 0x4D),
     ("pageup", 0x4B),
     ("pagedown", 0x4E),
-    ("pause", 0x48),
     ("scrolllock", 0x47),
     ("printscreen", 0x46),
     ("left", 0x50),
@@ -156,6 +156,10 @@ impl std::str::FromStr for Hotkey {
             }
         }
         hotkey.key = key_from_name(key).ok_or_else(|| format!("unknown key {key:?} in {s:?}"))?;
+        if !exists_here(hotkey.key) {
+            // It could be set, but never pressed: the only way back would be the edge.
+            return Err(format!("{key:?} in {s:?} is not a key this computer can report"));
+        }
         if !(hotkey.ctrl || hotkey.alt || hotkey.gui) {
             // Otherwise typing that key on the neighbour would bring the cursor back.
             return Err(format!("{s:?} needs ctrl, alt or cmd"));
@@ -189,6 +193,17 @@ impl Hotkey {
             && (!self.alt || any(hid::LEFT_ALT, hid::RIGHT_ALT))
             && (!self.shift || any(hid::LEFT_SHIFT, hid::RIGHT_SHIFT))
             && (!self.gui || any(hid::LEFT_GUI, hid::RIGHT_GUI))
+    }
+}
+
+/// Whether this computer's backend can report the key `hid`.
+fn exists_here(hid: u16) -> bool {
+    if cfg!(target_os = "macos") {
+        mac_from_hid(hid).is_some()
+    } else if cfg!(windows) {
+        windows_from_hid(hid).is_some()
+    } else {
+        evdev_from_hid(hid).is_some()
     }
 }
 
