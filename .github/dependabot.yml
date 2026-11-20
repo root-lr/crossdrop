@@ -5,6 +5,11 @@ updates:
     directories: ["/", "/apps/desktop/src-tauri"]
     schedule:
       interval: weekly
+    ignore:
+      # 0.14 needs Rust 1.89 (rust-version is 1.88) and changes the device
+      # types interdesk's Wayland code uses. Drop this when raising it.
+      - dependency-name: ashpd
+        versions: [">= 0.14"]
     groups:
       cargo:
         patterns: ["*"]
