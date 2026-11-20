@@ -67,6 +67,9 @@ pub struct Session {
     state: State,
     /// Keys held on the source while remote, for the escape shortcut.
     held: HashSet<u16>,
+    /// Buttons held on the neighbour: while any is down (a drag, a text
+    /// selection), the cursor stays there.
+    buttons: HashSet<Button>,
     /// Crossing failed (input could not be captured): wait until the cursor
     /// leaves the edge before trying again.
     edge_blocked: bool,
@@ -84,6 +87,7 @@ impl Session {
             sizes: vec![None; n],
             state: State::Local,
             held: HashSet::new(),
+            buttons: HashSet::new(),
             edge_blocked: false,
         }
     }
@@ -169,6 +173,7 @@ impl Session {
         debug!(idx, %side, x, y, screen = ?self.screen, enter_x = ex, enter_y = ey, "crossing");
         self.state = State::Remote { idx, x: ex as i64, y: ey as i64, w: w as i64, h: h as i64 };
         self.held.clear();
+        self.buttons.clear();
         vec![Action::Grab(true), Action::Send(idx, Msg::Enter { x: ex, y: ey })]
     }
 
@@ -186,7 +191,7 @@ impl Session {
                     Side::Bottom => ny < 0,
                     Side::Top => ny >= h,
                 };
-                if back {
+                if back && self.buttons.is_empty() {
                     debug!(idx, dx, dy, from_x = *x, from_y = *y, w, h, "back: crossed the edge facing this screen");
                     let frac = match self.sides[idx] {
                         Side::Left | Side::Right => ny as f64 / (h - 1).max(1) as f64,
@@ -198,7 +203,14 @@ impl Session {
                 *y = ny.clamp(0, h - 1);
                 vec![Action::Send(idx, Msg::Move { x: *x as i32, y: *y as i32 })]
             }
-            Input::Button { button, down } => vec![Action::Send(idx, Msg::Button { button, down })],
+            Input::Button { button, down } => {
+                if down {
+                    self.buttons.insert(button);
+                } else {
+                    self.buttons.remove(&button);
+                }
+                vec![Action::Send(idx, Msg::Button { button, down })]
+            }
             Input::Wheel { dx, dy } => vec![Action::Send(idx, Msg::Wheel { dx, dy })],
             Input::Key { hid: key, down } => {
                 if down {
@@ -235,6 +247,7 @@ impl Session {
         if matches!(self.state, State::Remote { .. }) {
             self.state = State::Local;
             self.held.clear();
+            self.buttons.clear();
             self.edge_blocked = true;
         }
     }
@@ -245,6 +258,7 @@ impl Session {
         let State::Remote { idx, .. } = self.state else { return vec![] };
         self.state = State::Local;
         self.held.clear();
+        self.buttons.clear();
         let (wx, wy) = match frac {
             Some(f) => {
                 let (from, to) = self.edges[idx];
@@ -386,6 +400,23 @@ mod tests {
     fn no_crossing_while_dragging() {
         let mut s = session();
         assert!(s.on_input(Input::Pos { x: 1919, y: 540, pressed: true }).is_empty());
+        assert_eq!(s.remote(), None);
+    }
+
+    #[test]
+    fn a_drag_on_the_neighbour_stays_there() {
+        let mut s = session();
+        s.on_input(Input::Pos { x: 1919, y: 540, pressed: false });
+        s.on_input(Input::Delta { dx: 100, dy: 0 });
+        s.on_input(Input::Button { button: Button::Left, down: true });
+        // Dragging past the edge that faces this screen: clamped, still there.
+        let a = s.on_input(Input::Delta { dx: -500, dy: 0 });
+        assert_eq!(a, vec![Action::Send(0, Msg::Move { x: 0, y: 720 })]);
+        assert_eq!(s.remote(), Some(0));
+        // Released: the next push across the edge comes home.
+        s.on_input(Input::Button { button: Button::Left, down: false });
+        let a = s.on_input(Input::Delta { dx: -1, dy: 0 });
+        assert_eq!(a[0], Action::Send(0, Msg::Leave));
         assert_eq!(s.remote(), None);
     }
 
