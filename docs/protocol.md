@@ -146,6 +146,18 @@ may not write here (send only). The choice is stored as `clipboard_send` in
 Headless devices without a system clipboard still accept and expose the last
 text through `crossdrop clip get`.
 
+### Images (`crossdrop/clipboard-image`)
+
+Allowed by the same `clipboard` permission. The sender writes
+`{"width":1920,"height":1080,"size":N}`, then exactly `N` bytes of PNG; the
+receiver checks that it decodes to that size, applies it and answers
+`{"type":"accepted"}` (or `rejected` with a reason). Images over 32 MiB as
+PNG are not shared. A separate service keeps older devices safe: they refuse
+it, and the sender simply skips them. Reading an image from the clipboard
+means converting it, so on macOS and Windows it is read again only when the
+system's change counter moves; on Linux an image is looked for at most every
+2 s, when there is no text. Text wins when the clipboard holds both.
+
 Copies that their app marks as sensitive are never sent: on macOS the
 `org.nspasteboard.ConcealedType` / `TransientType` pasteboard types (set by
 1Password, Bitwarden, KeePassXC…), on Windows the
