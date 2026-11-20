@@ -31,11 +31,31 @@ function useOverview() {
     }
   }, []);
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 1000);
-    return () => clearInterval(t);
+    // One request at a time, and none while the window is hidden: a slow
+    // daemon does not pile up calls, and a minimised app stays idle.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    let running = false;
+    const tick = async () => {
+      clearTimeout(timer);
+      if (running || document.hidden) return;
+      running = true;
+      await refresh();
+      running = false;
+      if (!stopped && !document.hidden) timer = setTimeout(tick, 1000);
+    };
+    const onVisibility = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    tick();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
-  return { data, error, refresh };
+  return { data, error, refresh, clearError: () => setError(null) };
 }
 
 /** Runs an action, reports its error, refreshes the view. */
@@ -55,7 +75,7 @@ function useAct(refresh: () => void, setNotice: (m: string | null) => void) {
 }
 
 export default function App() {
-  const { data, error, refresh } = useOverview();
+  const { data, error, refresh, clearError } = useOverview();
   const [notice, setNotice] = useState<string | null>(null);
   const [transfers, setTransfers] = useState<Record<number, Transfer>>({});
   const [pairing, setPairing] = useState<Challenge | null>(null);
@@ -156,7 +176,13 @@ export default function App() {
       {(notice || error) && (
         <div className="notice" role="alert">
           {notice ?? error}
-          <button className="link" onClick={() => setNotice(null)}>
+          <button
+            className="link"
+            onClick={() => {
+              setNotice(null);
+              clearError();
+            }}
+          >
             {t.dismiss}
           </button>
         </div>
