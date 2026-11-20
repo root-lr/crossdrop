@@ -55,6 +55,8 @@ struct Injected {
     pos: (f64, f64),
     buttons: [bool; 3],
     flags: u64,
+    /// Modifier keys held, each side apart (`Modifier::side` bits).
+    sides: u64,
     last_click: Option<(usize, Instant, i64)>,
     wheel: (i32, i32),
 }
@@ -74,15 +76,46 @@ fn displays_bounds() -> Rect {
 }
 
 /// Modifier key code → flag bit.
-fn modifier_flag(keycode: u16) -> Option<u64> {
+/// A modifier key: the flag every app sees, which is the same for the left
+/// and right keys, and the bit of this key alone (`NX_DEVICE…KEYMASK`, in the
+/// low bits of the same flags) next to the other side's.
+#[derive(Clone, Copy)]
+struct Modifier {
+    flag: u64,
+    side: u64,
+    other_side: u64,
+}
+
+/// Caps Lock: its flag is the lock's state, not whether the key is held.
+const CAPS_LOCK: u16 = 0x39;
+
+fn modifier(keycode: u16) -> Option<Modifier> {
+    use CGEventFlags as F;
+    let m = |flag: F, side, other_side| Modifier { flag: flag.bits(), side, other_side };
     Some(match keycode {
-        0x38 | 0x3C => CGEventFlags::CGEventFlagShift.bits(),
-        0x3B | 0x3E => CGEventFlags::CGEventFlagControl.bits(),
-        0x3A | 0x3D => CGEventFlags::CGEventFlagAlternate.bits(),
-        0x37 | 0x36 => CGEventFlags::CGEventFlagCommand.bits(),
-        0x39 => CGEventFlags::CGEventFlagAlphaShift.bits(),
+        0x38 => m(F::CGEventFlagShift, 0x02, 0x04),
+        0x3C => m(F::CGEventFlagShift, 0x04, 0x02),
+        0x3B => m(F::CGEventFlagControl, 0x01, 0x2000),
+        0x3E => m(F::CGEventFlagControl, 0x2000, 0x01),
+        0x3A => m(F::CGEventFlagAlternate, 0x20, 0x40),
+        0x3D => m(F::CGEventFlagAlternate, 0x40, 0x20),
+        0x37 => m(F::CGEventFlagCommand, 0x08, 0x10),
+        0x36 => m(F::CGEventFlagCommand, 0x10, 0x08),
+        CAPS_LOCK => m(F::CGEventFlagAlphaShift, 0, 0),
         _ => return None,
     })
+}
+
+/// Whether the modifier key `m` is down after a FlagsChanged event with
+/// these flags. The side bits tell left from right: with left Shift held,
+/// releasing right Shift leaves the Shift flag set. Events that carry no
+/// side bits (some tools post such) fall back on the shared flag.
+fn modifier_down(m: Modifier, flags: u64) -> bool {
+    if flags & (m.side | m.other_side) != 0 || flags & m.flag == 0 {
+        flags & m.side != 0
+    } else {
+        flags & m.flag != 0
+    }
 }
 
 fn translate(kind: CGEventType, event: &CGEvent, grabbed: bool) -> Option<Input> {
@@ -124,8 +157,10 @@ fn translate(kind: CGEventType, event: &CGEvent, grabbed: bool) -> Option<Input>
         }
         FlagsChanged => {
             let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-            let flag = modifier_flag(code)?;
-            let down = event.get_flags().bits() & flag != 0;
+            let m = modifier(code)?;
+            // Each Caps Lock event is one press, which turns the lock on
+            // or off: sent as a press (its release follows, see the tap).
+            let down = code == CAPS_LOCK || modifier_down(m, event.get_flags().bits());
             keymap::hid_from_mac(code).map(|hid| Input::Key { hid, down })
         }
         _ => None,
@@ -201,6 +236,11 @@ pub fn start(events: UnboundedSender<Input>) -> Result<Arc<dyn Platform>> {
                 let grabbed = GRABBED.load(Ordering::Relaxed);
                 if let Some(input) = translate(kind, event, grabbed) {
                     let _ = events.send(input);
+                    if matches!(kind, FlagsChanged)
+                        && event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16 == CAPS_LOCK
+                    {
+                        let _ = events.send(Input::Key { hid: keymap::hid::CAPS_LOCK, down: false });
+                    }
                 }
                 if grabbed && !matches!(kind, MouseMoved | LeftMouseDragged | RightMouseDragged | OtherMouseDragged) {
                     CallbackResult::Drop
@@ -361,12 +401,16 @@ impl Platform for Mac {
     fn key(&self, hid: u16, down: bool) {
         let Some(code) = keymap::mac_from_hid(hid) else { return };
         let mut st = self.state.lock().unwrap();
-        let modifier = modifier_flag(code);
-        if let Some(flag) = modifier {
-            if down {
-                st.flags |= flag;
+        let modifier = modifier(code);
+        if let Some(m) = modifier {
+            if m.side == 0 {
+                // Caps Lock.
+                st.flags = if down { st.flags | m.flag } else { st.flags & !m.flag };
             } else {
-                st.flags &= !flag;
+                st.sides = if down { st.sides | m.side } else { st.sides & !m.side };
+                // Held while either side is.
+                let held = st.sides & (m.side | m.other_side) != 0;
+                st.flags = if held { st.flags | m.flag } else { st.flags & !m.flag };
             }
         }
         let Some(e) = source().and_then(|s| CGEvent::new_keyboard_event(s, code, down).ok()) else { return };
@@ -381,6 +425,19 @@ impl Platform for Mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn left_and_right_modifiers_are_told_apart() {
+        let shift = CGEventFlags::CGEventFlagShift.bits();
+        let (left, right) = (modifier(0x38).unwrap(), modifier(0x3C).unwrap());
+        // Left Shift held, right Shift pressed then released.
+        assert!(modifier_down(left, shift | 0x02));
+        assert!(modifier_down(right, shift | 0x02 | 0x04));
+        assert!(!modifier_down(right, shift | 0x02), "right Shift is up although Shift still is");
+        assert!(!modifier_down(left, 0));
+        // An event without side bits: the shared flag decides.
+        assert!(modifier_down(right, shift));
+    }
     use core_graphics::event::CGScrollEventUnit;
 
     fn scroll(unit: CGScrollEventUnit, dy: i32, dx: i32) -> Option<Input> {

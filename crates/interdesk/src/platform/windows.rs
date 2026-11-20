@@ -115,6 +115,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 && GRABBED.load(Ordering::Relaxed) {
         let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        // With AltGr, Windows adds a left Ctrl of its own (scan code 0x21D)
+        // before right Alt: passed on, it would reach the neighbour as
+        // Ctrl+AltGr, which types nothing. Swallowed, as the real keys are.
+        if info.flags & LLKHF_INJECTED == 0 && info.scanCode & 0x200 != 0 {
+            return 1;
+        }
         if info.flags & LLKHF_INJECTED == 0 {
             let ext = if info.flags & LLKHF_EXTENDED != 0 { 0xE000 } else { 0 };
             let scan = (info.scanCode as u16 & 0xFF) | ext;
