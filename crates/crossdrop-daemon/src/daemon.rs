@@ -36,6 +36,11 @@ const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const MAX_CLIPBOARD_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 /// How long a clipboard image may take to arrive.
 const CLIPBOARD_IMAGE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a clipboard text may take to arrive.
+const CLIPBOARD_TEXT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Clipboard images received at once. Each one holds its PNG in memory
+/// while it is checked, so a peer cannot make the daemon hold hundreds.
+const MAX_INCOMING_IMAGES: usize = 2;
 /// How long an opened channel waits for its client to attach.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an incoming transfer waits for the user to accept it.
@@ -87,6 +92,8 @@ pub(crate) struct Daemon {
     clip_received: Mutex<Option<(String, String)>>,
     /// Last image received from a peer, with the sender's name.
     clip_image_received: Mutex<Option<(Image, String)>>,
+    /// Room for clipboard images being received ([`MAX_INCOMING_IMAGES`]).
+    image_slots: tokio::sync::Semaphore,
 }
 
 impl Daemon {
@@ -107,6 +114,7 @@ impl Daemon {
             clip_known: Mutex::default(),
             clip_received: Mutex::default(),
             clip_image_received: Mutex::default(),
+            image_slots: tokio::sync::Semaphore::new(MAX_INCOMING_IMAGES),
         })
     }
 
@@ -244,6 +252,9 @@ impl Daemon {
             return Ok(());
         }
         if service == services::CLIPBOARD_IMAGE {
+            let Ok(_slot) = self.image_slots.try_acquire() else {
+                return pending.reject("too many clipboard images at once").await;
+            };
             let mut io = pending.accept().await?.into_io();
             let ClipboardImage { width, height, size } = read_frame_max(&mut io, MAX_SMALL_FRAME_LEN).await?;
             if size > MAX_CLIPBOARD_IMAGE_BYTES {
@@ -269,7 +280,11 @@ impl Daemon {
         }
         if service == services::CLIPBOARD {
             let mut io = pending.accept().await?.into_io();
-            let Clipboard { text } = read_frame(&mut io).await?;
+            let Clipboard { text } = tokio::time::timeout(CLIPBOARD_TEXT_TIMEOUT, read_frame(&mut io)).await??;
+            if let Err(e) = check_clipboard_size(&text) {
+                write_frame(&mut io, &ChannelReply::Rejected { reason: format!("{e:#}"), code: None }).await?;
+                return Ok(());
+            }
             self.apply_remote_clipboard(text, device.name.clone());
             write_frame(&mut io, &ChannelReply::Accepted).await?;
             let _ = io.shutdown().await;
@@ -451,7 +466,9 @@ impl Daemon {
             peer_name: name.to_string(),
             files: offer.entries.len() as u32,
             total_bytes: offer.total_bytes(),
-            preview: offer.entries.iter().take(5).map(|e| e.path.clone()).collect(),
+            // Cleaned names, as they will be stored: the raw ones may hold
+            // terminal escapes or direction marks.
+            preview: offer.shown_paths().take(5).collect(),
         };
         let (tx, rx) = oneshot::channel();
         self.offers.lock().unwrap().insert(offer_id.clone(), PendingOffer { info, decision: tx });

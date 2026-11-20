@@ -150,7 +150,9 @@ Any paired device may open this service, whatever its permissions.
   sends `{"type":"error","message":"cancelled on the receiving side","code":"cancelled"}`,
   closes the stream and deletes that transfer's partial files and journal.
   A sender whose write fails reads that last frame to report the reason.
-- **Safety.** Path components are cleaned (control characters removed,
+- **Safety.** An offer whose sizes add up to more than 2⁶⁴ bytes is refused.
+  Path components are cleaned (control characters and direction marks such
+  as U+202E removed,
   `\ : * ? " < > |` replaced by `_`; on Windows, device names such as `CON`
   or `nul.txt` get a `_` prefix); `..`, empty components and absolute paths
   are refused. A root that already exists in the download folder gets a
@@ -160,7 +162,8 @@ Any paired device may open this service, whatever its permissions.
 
 One channel per update: the sender writes `{"text":"…"}`, the receiver
 applies it and answers `{"type":"accepted"}`. Texts over 1 MiB are not shared
-(send them as a file).
+(send them as a file); the receiver refuses them too, and gives a text 30 s
+to arrive.
 
 Sharing is opt-in per device and symmetric by default: `crossdrop allow X
 clipboard` lets X write to this device's clipboard **and** makes this device
@@ -178,7 +181,8 @@ Allowed by the same `clipboard` permission. The sender writes
 `{"width":1920,"height":1080,"size":N}`, then exactly `N` bytes of PNG; the
 receiver checks that it decodes to that size, applies it and answers
 `{"type":"accepted"}` (or `rejected` with a reason). Images over 32 MiB as
-PNG are not shared. A separate service keeps older devices safe: they refuse
+PNG, or over 64 Mpx, are not shared; the receiver checks the size a PNG
+declares before decoding it, and takes at most 2 images at once. A separate service keeps older devices safe: they refuse
 it, and the sender simply skips them. Reading an image from the clipboard
 means converting it, so on macOS and Windows it is read again only when the
 system's change counter moves; on Linux an image is looked for at most every
