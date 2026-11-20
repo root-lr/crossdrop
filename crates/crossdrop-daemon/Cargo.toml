@@ -49,5 +49,9 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 clipboard-win = { version = "5.4.3", features = ["std"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
+# The version arboard uses, so nothing more is built.
+[target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
+x11rb = "0.13.2"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"

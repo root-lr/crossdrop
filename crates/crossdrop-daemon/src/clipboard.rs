@@ -121,10 +121,11 @@ impl SystemClipboard {
                     }
                 };
                 let mut reader = Reader::default();
+                let mut probe = Probe::new();
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
                         Cmd::Get(reply) => {
-                            let _ = reply.send(reader.read(&mut clipboard));
+                            let _ = reply.send(reader.read(&mut clipboard, &mut probe));
                         }
                         Cmd::Set(content) => {
                             if let Err(e) = write(&mut clipboard, &content) {
@@ -163,12 +164,12 @@ struct Reader {
 }
 
 impl Reader {
-    fn read(&mut self, clipboard: &mut arboard::Clipboard) -> Option<Content> {
+    fn read(&mut self, clipboard: &mut arboard::Clipboard, probe: &mut Probe) -> Option<Content> {
         let counter = change_counter();
         if counter.is_some() && counter == self.seen {
             return self.last.clone();
         }
-        if is_sensitive() {
+        if probe.is_sensitive() {
             debug!("clipboard marked sensitive by its owner; not shared");
             self.remember(counter, None);
             return None;
@@ -244,26 +245,138 @@ fn has_sensitive_type<S: AsRef<str>>(types: impl IntoIterator<Item = S>) -> bool
     types.into_iter().any(|t| MAC_SENSITIVE_TYPES.contains(&t.as_ref()))
 }
 
-/// Whether the current clipboard content was marked as not to be shared.
+/// Tells whether the current clipboard content was marked as not to be
+/// shared. On Linux it keeps its own connection to the X server.
+#[cfg(any(target_os = "macos", windows))]
+struct Probe;
+
+#[cfg(any(target_os = "macos", windows))]
+impl Probe {
+    fn new() -> Self {
+        Self
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn is_sensitive() -> bool {
-    let Some(types) = objc2_app_kit::NSPasteboard::generalPasteboard().types() else { return false };
-    has_sensitive_type(types.iter().map(|t| t.to_string()))
+impl Probe {
+    fn is_sensitive(&mut self) -> bool {
+        let Some(types) = objc2_app_kit::NSPasteboard::generalPasteboard().types() else { return false };
+        has_sensitive_type(types.iter().map(|t| t.to_string()))
+    }
 }
 
 /// Windows: the formats clipboard managers and password managers set to
 /// keep a copy out of history and sync tools.
 #[cfg(windows)]
-fn is_sensitive() -> bool {
-    ["ExcludeClipboardContentFromMonitorProcessing", "Clipboard Viewer Ignore"].iter().any(|name| {
-        clipboard_win::register_format(name).is_some_and(|format| clipboard_win::is_format_avail(format.get()))
-    })
+impl Probe {
+    fn is_sensitive(&mut self) -> bool {
+        ["ExcludeClipboardContentFromMonitorProcessing", "Clipboard Viewer Ignore"].iter().any(|name| {
+            clipboard_win::register_format(name).is_some_and(|format| clipboard_win::is_format_avail(format.get()))
+        })
+    }
 }
 
-/// Not detected yet on X11 and Wayland.
 #[cfg(not(any(target_os = "macos", windows)))]
-fn is_sensitive() -> bool {
-    false
+use x11::Probe;
+
+/// Linux and the BSDs: the clipboard is read through X11, also in a Wayland
+/// session (through Xwayland, which offers Wayland copies under the same
+/// names). Password managers add a target that says "secret":
+/// `x-kde-passwordManagerHint`, set by KeePassXC and by KDE apps, and
+/// honoured by Klipper.
+#[cfg(not(any(target_os = "macos", windows)))]
+mod x11 {
+    use std::time::{Duration, Instant};
+
+    use tracing::debug;
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt, CreateWindowAux, Window, WindowClass};
+    use x11rb::protocol::Event;
+    use x11rb::rust_connection::RustConnection;
+    use x11rb::CURRENT_TIME;
+
+    /// Targets that mark a copy as not to be shared.
+    pub(super) const SENSITIVE_TARGETS: &[&str] = &["x-kde-passwordManagerHint"];
+
+    /// How long the owner of the clipboard has to list its targets.
+    const ANSWER_WITHIN: Duration = Duration::from_millis(300);
+
+    pub(super) struct Probe {
+        /// `None` when there is no X server; nothing is detected then.
+        x: Option<X>,
+    }
+
+    struct X {
+        conn: RustConnection,
+        window: Window,
+        clipboard: Atom,
+        targets: Atom,
+        /// Where the owner writes its answer, on our window.
+        property: Atom,
+        sensitive: Vec<Atom>,
+    }
+
+    impl Probe {
+        pub(super) fn new() -> Self {
+            let x = X::connect().map_err(|e| debug!("sensitive copies not detected: {e:#}")).ok();
+            Self { x }
+        }
+
+        pub(super) fn is_sensitive(&mut self) -> bool {
+            let Some(x) = &self.x else { return false };
+            match x.targets() {
+                Ok(targets) => targets.iter().any(|t| x.sensitive.contains(t)),
+                Err(e) => {
+                    debug!("clipboard targets not read: {e:#}");
+                    false
+                }
+            }
+        }
+    }
+
+    impl X {
+        fn connect() -> anyhow::Result<Self> {
+            let (conn, screen) = x11rb::connect(None)?;
+            let root = conn.setup().roots[screen].root;
+            let window = conn.generate_id()?;
+            // An unmapped window, only there to receive the answers.
+            conn.create_window(0, window, root, 0, 0, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new())?;
+            let atom =
+                |name: &str| -> anyhow::Result<Atom> { Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom) };
+            let clipboard = atom("CLIPBOARD")?;
+            let targets = atom("TARGETS")?;
+            let property = atom("CROSSDROP_TARGETS")?;
+            let sensitive = SENSITIVE_TARGETS.iter().map(|n| atom(n)).collect::<anyhow::Result<_>>()?;
+            conn.flush()?;
+            Ok(Self { conn, window, clipboard, targets, property, sensitive })
+        }
+
+        /// The targets the clipboard's owner offers; empty when nobody owns it.
+        fn targets(&self) -> anyhow::Result<Vec<Atom>> {
+            let owner = self.conn.get_selection_owner(self.clipboard)?.reply()?.owner;
+            if owner == x11rb::NONE {
+                return Ok(Vec::new());
+            }
+            self.conn.convert_selection(self.window, self.clipboard, self.targets, self.property, CURRENT_TIME)?;
+            self.conn.flush()?;
+            let deadline = Instant::now() + ANSWER_WITHIN;
+            loop {
+                match self.conn.poll_for_event()? {
+                    Some(Event::SelectionNotify(e)) if e.requestor == self.window => {
+                        if e.property == x11rb::NONE {
+                            return Ok(Vec::new());
+                        }
+                        break;
+                    }
+                    Some(_) => continue,
+                    None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+                    None => anyhow::bail!("the clipboard owner did not answer"),
+                }
+            }
+            let reply = self.conn.get_property(true, self.window, self.property, AtomEnum::ATOM, 0, 4096)?.reply()?;
+            Ok(reply.value32().map(|atoms| atoms.collect()).unwrap_or_default())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +403,63 @@ mod tests {
         assert!(!has_sensitive_type(["public.utf8-plain-text", "public.html"]));
     }
 
+    /// Needs an X server (the CI runs it on Xvfb):
+    /// `cargo test -p crossdrop-daemon --lib -- --ignored`. A copy offering
+    /// the KDE hint is sensitive; a plain one is not.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    #[test]
+    #[ignore]
+    fn real_x11_selection() {
+        assert!(owned_by_a_copy_with(&["UTF8_STRING", "x-kde-passwordManagerHint"]));
+        assert!(!owned_by_a_copy_with(&["UTF8_STRING", "text/plain"]));
+    }
+
+    /// Owns the clipboard from another connection, as an app copying with
+    /// these targets would, and asks a `Probe` about it.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn owned_by_a_copy_with(names: &[&str]) -> bool {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{
+            AtomEnum, ConnectionExt, CreateWindowAux, EventMask, PropMode, SelectionNotifyEvent, WindowClass,
+            SELECTION_NOTIFY_EVENT,
+        };
+        use x11rb::protocol::Event;
+        use x11rb::wrapper::ConnectionExt as _;
+
+        let (conn, screen) = x11rb::connect(None).expect("an X server (DISPLAY)");
+        let root = conn.setup().roots[screen].root;
+        let window = conn.generate_id().unwrap();
+        conn.create_window(0, window, root, 0, 0, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new())
+            .unwrap();
+        let atom = |n: &str| conn.intern_atom(false, n.as_bytes()).unwrap().reply().unwrap().atom;
+        let clipboard = atom("CLIPBOARD");
+        let offered: Vec<u32> = names.iter().map(|n| atom(n)).chain([atom("TARGETS")]).collect();
+        conn.set_selection_owner(window, clipboard, x11rb::CURRENT_TIME).unwrap();
+        conn.flush().unwrap();
+
+        let asking = thread::spawn(|| Probe::new().is_sensitive());
+        // Answer the probe's TARGETS request until it has its answer.
+        while !asking.is_finished() {
+            let Some(Event::SelectionRequest(r)) = conn.poll_for_event().unwrap() else {
+                thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            };
+            conn.change_property32(PropMode::REPLACE, r.requestor, r.property, AtomEnum::ATOM, &offered).unwrap();
+            let notify = SelectionNotifyEvent {
+                response_type: SELECTION_NOTIFY_EVENT,
+                sequence: 0,
+                time: r.time,
+                requestor: r.requestor,
+                selection: r.selection,
+                target: r.target,
+                property: r.property,
+            };
+            conn.send_event(false, r.requestor, EventMask::NO_EVENT, notify).unwrap();
+            conn.flush().unwrap();
+        }
+        asking.join().unwrap()
+    }
+
     /// Uses the real pasteboard, so it is opt-in:
     /// `cargo test -p crossdrop-daemon -- --ignored real_pasteboard`.
     #[cfg(target_os = "macos")]
@@ -300,9 +470,9 @@ mod tests {
         let mut cb = arboard::Clipboard::new().unwrap();
         let saved = cb.get_text().ok();
         cb.set().exclude_from_history().text("hunter2").unwrap();
-        let concealed = is_sensitive();
+        let concealed = Probe::new().is_sensitive();
         cb.set_text("plain").unwrap();
-        let plain = is_sensitive();
+        let plain = Probe::new().is_sensitive();
         if let Some(text) = saved {
             cb.set_text(text).unwrap();
         }
