@@ -59,7 +59,8 @@ Request / response calls: `status`, `list_devices`, `pair_start`,
 `pair_confirm`, `list_pair_requests`, `pair_answer`, `unpair`,
 `set_permission`, `open_channel`, `list_offers`, `list_receiving`, `cancel_receiving`, `offer_answer`,
 `set_auto_accept`, `clipboard_send`, `clipboard_get`. Errors come back as
-`{"type":"error","message":"…"}`. Field names are in
+`{"type":"error","message":"…"}`, with a `"code"` when the kind of failure
+is known (see [error codes](protocol.md#error-codes)). Field names are in
 [`crossdrop-proto`](../crates/crossdrop-proto/src/lib.rs).
 
 To use a channel:

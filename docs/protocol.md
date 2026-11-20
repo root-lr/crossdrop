@@ -57,10 +57,36 @@ Acceptance rules on the receiving device:
 
 1. `version` must be `1`, else `channel version … is not supported`.
 2. `crossdrop/pair` is open to anyone (it is how trust starts).
-3. Any other service requires the peer to be in `trusted.toml`, else `not paired`.
-4. The service must be in that device's `permissions`, else `permission denied`.
+3. Any other service requires the peer to be in `trusted.toml`, else `not paired`
+   (code `not_paired`).
+4. The service must be in that device's `permissions`, else `permission denied`
+   (code `permission_denied`).
 5. The service must be built in or registered by a running extension, else
-   `service … is not available`.
+   `service … is not available` (code `service_unavailable`).
+
+## Error codes
+
+`rejected` replies, the files service's `error` and the IPC `error`
+response may carry a `"code"` next to their English text, so that an app
+can explain the failure in its user's language:
+`{"type":"rejected","reason":"permission denied for crossdrop/clipboard","code":"permission_denied"}`.
+The field is left out when there is no code, and a code the reader does not
+know reads as `other`, so older and newer devices understand each other.
+
+| code | meaning |
+| --- | --- |
+| `not_paired` | the devices do not trust each other |
+| `permission_denied` | paired, but not allowed this service |
+| `service_unavailable` | nothing on the device handles this service |
+| `unknown_device` | no known device matches the name or id (IPC) |
+| `ambiguous_device` | several devices match it (IPC) |
+| `unreachable` | no known address, or no answer (IPC) |
+| `timeout` | the other device did not answer in time (IPC) |
+| `disk_full` | the receiver has not enough free space |
+| `cancelled` | the receiver stopped the transfer |
+| `changed` | a file changed on the sending side while sent |
+| `corrupted` | data does not match its checksum |
+| `other` | anything else |
 
 ## Pairing (`crossdrop/pair`)
 
@@ -110,7 +136,7 @@ Any paired device may open this service, whatever its permissions.
   handled like any other.
 - Before answering, the receiver checks that the bytes still to come fit on
   its disk with 64 MiB to spare; if not, it replies
-  `{"type":"error","message":"not enough disk space: …"}` instead.
+  `{"type":"error","message":"not enough disk space: …","code":"disk_full"}` instead.
 - The receiver may wait for its user (`crossdrop accept`, up to 5 minutes)
   unless the sender's device is set to auto-accept. A refusal is
   `{"type":"answer","accepted":false,"offsets":[]}`.
@@ -121,7 +147,7 @@ Any paired device may open this service, whatever its permissions.
   journal per transfer keeps the chosen root name and the files already
   completed. Leftovers untouched for 7 days are deleted.
 - **Cancel.** The receiver may stop at any point (`crossdrop cancel`): it
-  sends `{"type":"error","message":"cancelled on the receiving side"}`,
+  sends `{"type":"error","message":"cancelled on the receiving side","code":"cancelled"}`,
   closes the stream and deletes that transfer's partial files and journal.
   A sender whose write fails reads that last frame to report the reason.
 - **Safety.** Path components are cleaned (control characters removed,

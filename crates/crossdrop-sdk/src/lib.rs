@@ -28,7 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, ReceivingInfo, Request, Response};
 use crossdrop_proto::{read_frame, write_frame};
 
@@ -102,8 +102,8 @@ impl Client {
     pub async fn request(&mut self, req: &Request) -> Result<Response> {
         write_frame(&mut self.stream, req).await?;
         let resp: Response = read_frame(&mut self.stream).await.map_err(version_hint)?;
-        if let Response::Error { message } = resp {
-            bail!(message);
+        if let Response::Error { message, code } = resp {
+            return Err(failure(message, code));
         }
         Ok(resp)
     }
@@ -262,8 +262,24 @@ async fn attach(paths: &Paths, channel_id: &str) -> Result<IpcStream> {
     write_frame(&mut stream, &Request::Attach { channel_id: channel_id.into() }).await?;
     match read_frame::<_, Response>(&mut stream).await? {
         Response::Ok => Ok(stream),
-        Response::Error { message } => bail!(message),
+        Response::Error { message, code } => Err(failure(message, code)),
         other => Err(unexpected(other)),
+    }
+}
+
+pub use crossdrop_proto::{CodedError, ErrorCode};
+
+/// What kind of failure `error` reports, when the daemon or the other
+/// device said: lets an app explain it in its user's language.
+pub fn error_code(error: &anyhow::Error) -> Option<ErrorCode> {
+    error.chain().find_map(|e| e.downcast_ref::<CodedError>()).map(|e| e.code)
+}
+
+/// An error message from the daemon or another device, keeping its code.
+pub(crate) fn failure(message: String, code: Option<ErrorCode>) -> anyhow::Error {
+    match code {
+        Some(code) => CodedError::new(code, message).into(),
+        None => anyhow!(message),
     }
 }
 

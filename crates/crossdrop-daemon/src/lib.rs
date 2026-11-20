@@ -10,6 +10,21 @@ mod daemon;
 mod files;
 mod ipc;
 
+/// An error of a known kind, with its English message.
+pub(crate) fn coded(code: crossdrop_proto::ErrorCode, message: impl Into<String>) -> anyhow::Error {
+    crossdrop_proto::CodedError::new(code, message).into()
+}
+
+/// The kind of an error, when it is known: set here, or said by the other
+/// device when it refused a channel.
+pub(crate) fn error_code(error: &anyhow::Error) -> Option<crossdrop_proto::ErrorCode> {
+    error.chain().find_map(|e| {
+        e.downcast_ref::<crossdrop_proto::CodedError>()
+            .map(|c| c.code)
+            .or_else(|| e.downcast_ref::<crossdrop_core::Rejected>().and_then(|r| r.code))
+    })
+}
+
 use std::path::PathBuf;
 
 use anyhow::Result;

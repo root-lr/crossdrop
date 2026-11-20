@@ -4,7 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { bytes, t } from "./i18n";
+import { bytes, describe, explain, t } from "./i18n";
 import {
   api,
   shortId,
@@ -27,7 +27,7 @@ function useOverview() {
       setData(await api.overview());
       setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(describe(e));
     }
   }, []);
   useEffect(() => {
@@ -46,7 +46,7 @@ function useAct(refresh: () => void, setNotice: (m: string | null) => void) {
         await fn();
         setNotice(null);
       } catch (e) {
-        setNotice(String(e));
+        setNotice(describe(e));
       }
       refresh();
     },
@@ -87,7 +87,7 @@ export default function App() {
         setHover(null);
         if (device) {
           const label = devicesRef.current.find((d) => d.id === device)?.name ?? device;
-          api.sendFiles(device, p.paths, false, label).catch((err) => setNotice(String(err)));
+          api.sendFiles(device, p.paths, false, label).catch((err) => setNotice(describe(err)));
         }
       } else {
         setHover(null);
@@ -326,7 +326,7 @@ export default function App() {
                 <small>
                   {x.files ? `${t.files(x.files)}, ` : ""}
                   {t.progress(bytes(x.done), bytes(x.total))}
-                  {x.message ? `: ${x.message}` : ""}
+                  {x.message ? `: ${explain(x.code, x.message)}` : ""}
                 </small>
               </li>
             ))}
@@ -510,7 +510,7 @@ function StartAtLogin({ onError }: { onError: (message: string) => void }) {
       await (on ? disable() : enable());
       setOn(await isEnabled());
     } catch (e) {
-      onError(String(e));
+      onError(describe(e));
     }
   };
   return (
@@ -562,7 +562,7 @@ function PairDialog({ challenge, onClose }: { challenge: Challenge; onClose: () 
     try {
       setStep((await api.pairConfirm(challenge.pair_id, true)) ? "paired" : "refused");
     } catch (e) {
-      setMessage(String(e));
+      setMessage(describe(e));
       setStep("error");
     }
   };

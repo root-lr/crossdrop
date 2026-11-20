@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crossdrop_proto::ipc::{DeviceInfo, OfferInfo, PairRequestInfo, ReceivingInfo};
 use crossdrop_sdk::files::{send_files_with, Declined, SendEvent, SendOptions};
-use crossdrop_sdk::{Client, Paths};
+use crossdrop_sdk::{error_code, Client, ErrorCode, Paths};
 use interdesk::layout::{Layout, Side};
 use interdesk::platform::Platform;
 use interdesk::session::Input;
@@ -46,10 +46,19 @@ struct App {
     zones: Mutex<Vec<(Side, String, String)>>,
 }
 
-type Res<T> = Result<T, String>;
+type Res<T> = Result<T, Failure>;
 
-fn err(e: impl std::fmt::Display) -> String {
-    format!("{e:#}")
+/// An error as the window receives it: the English message, and its kind
+/// when known, so that the window can say it in the user's language.
+#[derive(Debug, Clone, Serialize)]
+struct Failure {
+    code: Option<ErrorCode>,
+    message: String,
+}
+
+fn err(e: impl Into<anyhow::Error>) -> Failure {
+    let e = e.into();
+    Failure { code: error_code(&e), message: format!("{e:#}") }
 }
 
 async fn client(app: &App) -> Res<Client> {
@@ -95,7 +104,7 @@ async fn overview(app: State<'_, App>) -> Res<Overview> {
     // A broken interdesk.toml must not hide everything else.
     let (layout, layout_error) = match Layout::load(&interdesk::layout_path(&app.paths)) {
         Ok(layout) => (layout, None),
-        Err(e) => (Layout::default(), Some(err(e))),
+        Err(e) => (Layout::default(), Some(format!("{e:#}"))),
     };
     let return_key = layout.return_hotkey().unwrap_or_default().to_string();
     Ok(Overview {
@@ -196,6 +205,8 @@ struct Transfer {
     /// waiting | sending | done | declined | failed
     state: &'static str,
     message: String,
+    /// Kind of failure, when known.
+    code: Option<ErrorCode>,
     desktop: bool,
 }
 
@@ -227,7 +238,17 @@ async fn transfer(
     desktop: bool,
 ) {
     let shown = label.unwrap_or_else(|| device.clone());
-    let mut t = Transfer { id, device: shown, files: 0, done: 0, total: 0, state: "waiting", message: String::new(), desktop };
+    let mut t = Transfer {
+        id,
+        device: shown,
+        files: 0,
+        done: 0,
+        total: 0,
+        state: "waiting",
+        message: String::new(),
+        code: None,
+        desktop,
+    };
     let _ = handle.emit("transfer", t.clone());
     let result = async {
         let mut stream = Client::connect(base).await?.open_channel(&device, "crossdrop/files").await?;
@@ -269,7 +290,9 @@ async fn transfer(
         Err(e) if e.downcast_ref::<Declined>().is_some() => t.state = "declined",
         Err(e) => {
             t.state = "failed";
-            t.message = err(e);
+            let failure = err(e);
+            t.message = failure.message;
+            t.code = failure.code;
         }
     }
     let _ = handle.emit("transfer", t);
@@ -526,7 +549,7 @@ fn main() {
                     }
                 }
                 if let Err(e) = refresh_zones(&handle, &state) {
-                    tracing::warn!("drop zones: {e}");
+                    tracing::warn!("drop zones: {}", e.message);
                 }
             });
             Ok(())

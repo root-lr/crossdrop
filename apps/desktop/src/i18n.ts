@@ -1,4 +1,5 @@
 import { createElement, Fragment, type ReactNode } from "react";
+import type { ErrorCode } from "./api";
 
 /**
  * The app's texts, in each language it speaks. English is the reference:
@@ -7,7 +8,8 @@ import { createElement, Fragment, type ReactNode } from "react";
  * each language puts them where its grammar wants. Messages that return
  * `ReactNode` take parts that may be markup (a name in bold).
  *
- * Errors coming from the daemon stay in English: they are text it sends.
+ * Errors from the daemon come as English text with a code: `describe`
+ * shows the language's sentence for that code, else the English text.
  */
 
 /** The languages, in the order they are tried after the system's. */
@@ -108,6 +110,8 @@ const en = {
   nextComputer: "the next computer",
   /** Binary units: 1 KiB = 1024 B. */
   units: ["B", "KiB", "MiB", "GiB", "TiB"],
+  /** Errors by kind. English keeps the daemon's own text, which says more. */
+  errors: {} as Partial<Record<ErrorCode, string>>,
 };
 
 export type Messages = typeof en;
@@ -197,6 +201,20 @@ const fr: Messages = {
   dropOnDesktop: ["Déposer sur le bureau de ", ""],
   nextComputer: "l’ordinateur voisin",
   units: ["o", "Kio", "Mio", "Gio", "Tio"],
+  errors: {
+    not_paired: "Ces appareils ne sont pas associés.",
+    permission_denied: "L’autre appareil ne l’autorise pas. Il peut l’activer dans ses réglages pour cet appareil.",
+    service_unavailable:
+      "L’autre appareil ne propose pas ce service : il n’est pas lancé, ou sa version de crossdrop est trop ancienne.",
+    unknown_device: "Aucun appareil connu ne porte ce nom.",
+    ambiguous_device: "Plusieurs appareils portent ce nom.",
+    unreachable: "Appareil injoignable : est-il allumé et sur ce réseau ?",
+    timeout: "L’autre appareil n’a pas répondu à temps.",
+    disk_full: "Pas assez d’espace disque sur l’appareil qui reçoit.",
+    cancelled: "Arrêté sur l’appareil qui reçoit.",
+    changed: "Un fichier a changé pendant l’envoi : envoyez-le à nouveau.",
+    corrupted: "Des données sont arrivées abîmées : envoyez à nouveau.",
+  } satisfies Record<Exclude<ErrorCode, "other">, string>,
 };
 
 const MESSAGES: Record<Lang, Messages> = { en, fr };
@@ -229,4 +247,19 @@ export function bytes(n: number): string {
   }
   // A space that does not break between the number and its unit.
   return u === 0 ? `${number(0).format(n)} ${t.units[0]}` : `${number(v < 10 ? 1 : 0).format(v)} ${t.units[u]}`;
+}
+
+/** An error's text in the user's language when its kind is known, else
+ * the English message it came with. Takes what a command rejects with. */
+export function describe(error: unknown): string {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const { code, message } = error as { code?: ErrorCode | null; message: unknown };
+    return explain(code ?? null, String(message));
+  }
+  return String(error);
+}
+
+/** The sentence for `code` in the user's language, else `message`. */
+export function explain(code: ErrorCode | null, message: string): string {
+  return (code && t.errors[code]) || message;
 }
