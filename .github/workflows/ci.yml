@@ -72,6 +72,7 @@ jobs:
           Xvfb :99 -screen 0 1920x1080x24 &
           sleep 1
           DISPLAY=:99 cargo test -p interdesk --lib -- --ignored
+          DISPLAY=:99 cargo test -p crossdrop-daemon --lib -- --ignored
 
   desktop:
     name: desktop app (${{ matrix.os }})

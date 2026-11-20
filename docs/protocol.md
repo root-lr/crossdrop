@@ -162,7 +162,10 @@ Copies that their app marks as sensitive are never sent: on macOS the
 `org.nspasteboard.ConcealedType` / `TransientType` pasteboard types (set by
 1Password, Bitwarden, KeePassXC…), on Windows the
 `ExcludeClipboardContentFromMonitorProcessing` and `Clipboard Viewer Ignore`
-formats. Not detected yet on Linux.
+formats, on Linux the `x-kde-passwordManagerHint` target (set by KeePassXC
+and KDE apps). Linux reads the clipboard through X11, so in a Wayland
+session this relies on Xwayland, which offers Wayland copies under the same
+names.
 
 ## Reserved service names
 
