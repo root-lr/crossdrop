@@ -872,6 +872,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
+ "x11rb 0.13.2",
 ]
 
 [[package]]
