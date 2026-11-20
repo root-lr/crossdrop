@@ -49,6 +49,68 @@ pub mod services {
     pub const INTERDESK_INPUT: &str = "interdesk/input";
 }
 
+/// What kind of failure an error message reports, so that apps can explain
+/// it in their user's language. Sent next to the English message, never
+/// instead of it. Newer devices may send codes this one does not know: they
+/// read as [`ErrorCode::Other`].
+#[derive(Debug, Clone, Copy, Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// The other device does not trust this one (or this one does not
+    /// know the device named).
+    NotPaired,
+    /// The device is paired but not allowed to use this service.
+    PermissionDenied,
+    /// Nothing on the other device handles this service (an extension that
+    /// is not running, or an older version).
+    ServiceUnavailable,
+    /// No known device matches the name or id given.
+    UnknownDevice,
+    /// Several devices match the name or id given.
+    AmbiguousDevice,
+    /// The device could not be reached: no known address, or no answer.
+    Unreachable,
+    /// The other device did not answer in time.
+    Timeout,
+    /// The receiving device has not enough free space.
+    DiskFull,
+    /// The receiving device stopped the transfer.
+    Cancelled,
+    /// A file changed on the sending side while it was sent.
+    Changed,
+    /// The data received does not match its checksum.
+    Corrupted,
+    /// Any other failure, including codes from newer versions.
+    #[serde(other)]
+    Other,
+}
+
+/// An error that carries an [`ErrorCode`]. Its text is the English message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct CodedError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl CodedError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+}
+
+/// The code of the first [`CodedError`] in an error's chain of sources.
+pub fn error_code(error: &(dyn std::error::Error + 'static)) -> Option<ErrorCode> {
+    let mut next = Some(error);
+    while let Some(e) = next {
+        if let Some(coded) = e.downcast_ref::<CodedError>() {
+            return Some(coded.code);
+        }
+        next = e.source();
+    }
+    None
+}
+
 /// Longest device name kept from another device, in characters.
 pub const MAX_NAME_CHARS: usize = 64;
 
@@ -147,7 +209,11 @@ pub mod wire {
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum ChannelReply {
         Accepted,
-        Rejected { reason: String },
+        Rejected {
+            reason: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            code: Option<crate::ErrorCode>,
+        },
     }
 
     /// Pairing service messages.
@@ -214,6 +280,8 @@ pub mod wire {
         },
         Error {
             message: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            code: Option<crate::ErrorCode>,
         },
     }
 
@@ -329,6 +397,8 @@ pub mod ipc {
         Ok,
         Error {
             message: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            code: Option<crate::ErrorCode>,
         },
         Status {
             device_id: String,
@@ -437,6 +507,33 @@ pub mod ipc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_codes_are_optional_and_forward_compatible() {
+        use wire::ChannelReply;
+        // From a device that sends no code.
+        let old: ChannelReply = serde_json::from_str(r#"{"type":"rejected","reason":"not paired"}"#).unwrap();
+        assert_eq!(old, ChannelReply::Rejected { reason: "not paired".into(), code: None });
+        // A code this version does not know yet.
+        let newer: ipc::Response =
+            serde_json::from_str(r#"{"type":"error","message":"x","code":"quota_exceeded"}"#).unwrap();
+        assert_eq!(newer, ipc::Response::Error { message: "x".into(), code: Some(ErrorCode::Other) });
+        // No code, no field: older devices read exactly what they used to.
+        let none = serde_json::to_string(&wire::Files::Error { message: "x".into(), code: None }).unwrap();
+        assert_eq!(none, r#"{"type":"error","message":"x"}"#);
+        let some = ChannelReply::Rejected { reason: "x".into(), code: Some(ErrorCode::PermissionDenied) };
+        assert!(serde_json::to_string(&some).unwrap().ends_with(r#""code":"permission_denied"}"#));
+    }
+
+    #[test]
+    fn error_code_is_found_behind_other_errors() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("sending failed")]
+        struct Outer(#[source] CodedError);
+        let e = Outer(CodedError::new(ErrorCode::DiskFull, "not enough disk space"));
+        assert_eq!(error_code(&e), Some(ErrorCode::DiskFull));
+        assert_eq!(error_code(&std::io::Error::other("x")), None);
+    }
 
     #[test]
     fn device_names_are_cleaned() {

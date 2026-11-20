@@ -55,6 +55,28 @@ export interface Overview {
   embedded: boolean;
 }
 
+/** Kinds of failure the daemon and other devices name (`ErrorCode` in
+ * crossdrop-proto); a newer device may send others. */
+export type ErrorCode =
+  | "not_paired"
+  | "permission_denied"
+  | "service_unavailable"
+  | "unknown_device"
+  | "ambiguous_device"
+  | "unreachable"
+  | "timeout"
+  | "disk_full"
+  | "cancelled"
+  | "changed"
+  | "corrupted"
+  | "other";
+
+/** What a command rejects with: the English message, and its kind when known. */
+export interface Failure {
+  code: ErrorCode | null;
+  message: string;
+}
+
 export interface Transfer {
   id: number;
   device: string;
@@ -63,6 +85,7 @@ export interface Transfer {
   total: number;
   state: "waiting" | "sending" | "done" | "declined" | "failed";
   message: string;
+  code: ErrorCode | null;
   desktop: boolean;
 }
 

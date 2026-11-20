@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crossdrop_daemon::{start, Handle, Options};
 use crossdrop_sdk::files::{send_files, Declined, SendEvent};
-use crossdrop_sdk::{Client, Paths};
+use crossdrop_sdk::{error_code, Client, ErrorCode, Paths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn daemon(dir: &Path, name: &str) -> Handle {
@@ -72,6 +72,10 @@ async fn pair_send_files_and_extension() {
     let mut ca = client(&a).await;
     let err = ca.open_channel(&b.id.to_string(), "crossdrop/files").await.unwrap_err();
     assert!(err.to_string().contains("not paired"), "{err}");
+    // The refusal keeps its kind on its way through both daemons.
+    assert_eq!(error_code(&err), Some(ErrorCode::NotPaired), "{err:#}");
+    let err = client(&a).await.open_channel("charlie", "crossdrop/files").await.unwrap_err();
+    assert_eq!(error_code(&err), Some(ErrorCode::UnknownDevice), "{err:#}");
 
     pair(&a, &b).await;
 
@@ -149,6 +153,7 @@ async fn pair_send_files_and_extension() {
 
     let err = client(&a).await.open_channel("bravo", "test/echo").await.unwrap_err();
     assert!(err.to_string().contains("permission denied"), "{err}");
+    assert_eq!(error_code(&err), Some(ErrorCode::PermissionDenied), "{err:#}");
 
     client(&b).await.set_permission("alpha", "test/echo", true).await.unwrap();
     let mut s = client(&a).await.open_channel("bravo", "test/echo").await.unwrap();

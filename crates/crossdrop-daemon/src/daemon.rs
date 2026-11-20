@@ -12,12 +12,13 @@ use crossdrop_core::{
 };
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, ReceivingInfo, Request, Response};
 use crossdrop_proto::wire::{ChannelReply, Clipboard, ClipboardImage, Pair};
-use crossdrop_proto::{read_frame, read_frame_max, services, write_frame, MAX_SMALL_FRAME_LEN};
+use crossdrop_proto::{read_frame, read_frame_max, services, write_frame, ErrorCode, MAX_SMALL_FRAME_LEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::clipboard::{Content, Image, SystemClipboard};
+use crate::coded;
 use crate::config::{Config, TrustStore, TrustedDevice};
 
 /// How long a user has to compare pairing codes.
@@ -197,7 +198,7 @@ impl Daemon {
             return self.handle_incoming_pair(peer, conn, pending).await;
         }
         let Some(device) = self.trusted(peer) else {
-            return pending.reject("not paired").await;
+            return pending.reject_as(Some(ErrorCode::NotPaired), "not paired").await;
         };
         if service == services::UNPAIR {
             let mut io = pending.accept().await?.into_io();
@@ -211,7 +212,9 @@ impl Daemon {
         let needed = if service == services::CLIPBOARD_IMAGE { services::CLIPBOARD } else { service.as_str() };
         if !device.allows(needed) {
             info!(peer = %device.name, %service, "channel refused: no permission");
-            return pending.reject(format!("permission denied for {service}")).await;
+            return pending
+                .reject_as(Some(ErrorCode::PermissionDenied), format!("permission denied for {service}"))
+                .await;
         }
         if service == services::FILES {
             let mut io = pending.accept().await?.into_io();
@@ -244,7 +247,11 @@ impl Daemon {
             let mut io = pending.accept().await?.into_io();
             let ClipboardImage { width, height, size } = read_frame_max(&mut io, MAX_SMALL_FRAME_LEN).await?;
             if size > MAX_CLIPBOARD_IMAGE_BYTES {
-                write_frame(&mut io, &ChannelReply::Rejected { reason: "clipboard image too large".into() }).await?;
+                write_frame(
+                    &mut io,
+                    &ChannelReply::Rejected { reason: "clipboard image too large".into(), code: None },
+                )
+                .await?;
                 return Ok(());
             }
             let mut png = vec![0; size as usize];
@@ -252,7 +259,7 @@ impl Daemon {
             let image = Image { width, height, png };
             // Checked before it reaches the clipboard.
             if let Err(e) = image.to_rgba() {
-                write_frame(&mut io, &ChannelReply::Rejected { reason: format!("{e:#}") }).await?;
+                write_frame(&mut io, &ChannelReply::Rejected { reason: format!("{e:#}"), code: None }).await?;
                 return Ok(());
             }
             self.apply_remote_image(image, device.name.clone());
@@ -270,7 +277,9 @@ impl Daemon {
         }
         let handler = self.services.lock().unwrap().get(&service).filter(|tx| !tx.is_closed()).cloned();
         let Some(handler) = handler else {
-            return pending.reject(format!("service {service} is not available")).await;
+            return pending
+                .reject_as(Some(ErrorCode::ServiceUnavailable), format!("service {service} is not available"))
+                .await;
         };
         let channel = pending.accept().await?;
         let channel_id = self.park_channel(channel);
@@ -335,7 +344,10 @@ impl Daemon {
     async fn dial_peer(self: &Arc<Self>, peer: DeviceId) -> Result<Connection> {
         let addrs = self.known_addrs(peer);
         if addrs.is_empty() {
-            bail!("no known address for {}; is it on this network?", peer.short());
+            return Err(coded(
+                ErrorCode::Unreachable,
+                format!("no known address for {}; is it on this network?", peer.short()),
+            ));
         }
         // All addresses at once: a stale one must not delay a good one by
         // the whole dial timeout.
@@ -362,7 +374,10 @@ impl Daemon {
                 Err(e) => last_err = Some(e),
             }
         }
-        let conn = winner.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("unreachable")))?;
+        let conn = winner.ok_or_else(|| {
+            let why = last_err.map_or_else(|| "unreachable".to_string(), |e| format!("{e:#}"));
+            coded(ErrorCode::Unreachable, why)
+        })?;
         tokio::spawn(self.clone().serve_connection(peer, conn.clone()));
         Ok(conn)
     }
@@ -412,8 +427,11 @@ impl Daemon {
             .collect();
         match matches.as_slice() {
             [one] => Ok(*one),
-            [] => bail!("no device matches {target:?}"),
-            _ => bail!("{target:?} matches several devices; use more of its id"),
+            [] => Err(coded(ErrorCode::UnknownDevice, format!("no device matches {target:?}"))),
+            _ => Err(coded(
+                ErrorCode::AmbiguousDevice,
+                format!("{target:?} matches several devices; use more of its id"),
+            )),
         }
     }
 
@@ -525,7 +543,7 @@ impl Daemon {
         let ack = tokio::time::timeout(CLIPBOARD_IMAGE_TIMEOUT, read_frame::<_, ChannelReply>(&mut io)).await??;
         match ack {
             ChannelReply::Accepted => {}
-            ChannelReply::Rejected { reason } => bail!("clipboard image refused: {reason}"),
+            ChannelReply::Rejected { reason, .. } => bail!("clipboard image refused: {reason}"),
         }
         let _ = io.shutdown().await;
         Ok(())
@@ -609,7 +627,7 @@ impl Daemon {
             read_frame_max::<_, Pair>(&mut io, MAX_SMALL_FRAME_LEN),
         )
         .await
-        .context("the other device did not answer in time")??;
+        .map_err(|_| coded(ErrorCode::Timeout, "the other device did not answer in time"))??;
         let _ = io.shutdown().await;
         let Pair::Response { accepted, name } = answer else { bail!("unexpected pairing message") };
         let name = peer_name(&name);
@@ -781,7 +799,7 @@ impl Daemon {
             Request::Unpair { device } => {
                 let id = self.resolve_device(&device)?;
                 if self.trusted(id).is_none() {
-                    bail!("{device} is not paired");
+                    return Err(coded(ErrorCode::NotPaired, format!("{device} is not paired")));
                 }
                 // Best effort: the other device may be offline, or too old to
                 // know this service; it then keeps a stale entry, as before.
@@ -803,7 +821,10 @@ impl Daemon {
                 }
                 let id = self.resolve_device(&device)?;
                 let mut trust = self.trust.lock().unwrap();
-                let entry = trust.devices.get_mut(&id.to_string()).ok_or_else(|| anyhow!("{device} is not paired"))?;
+                let entry = trust
+                    .devices
+                    .get_mut(&id.to_string())
+                    .ok_or_else(|| coded(ErrorCode::NotPaired, format!("{device} is not paired")))?;
                 entry.permissions.retain(|s| s != &service);
                 if allow {
                     entry.permissions.push(service);
@@ -815,7 +836,10 @@ impl Daemon {
             Request::OpenChannel { device, service } => {
                 let id = self.resolve_device(&device)?;
                 if self.trusted(id).is_none() {
-                    bail!("{device} is not paired; run `crossdrop pair {device}` first");
+                    return Err(coded(
+                        ErrorCode::NotPaired,
+                        format!("{device} is not paired; run `crossdrop pair {device}` first"),
+                    ));
                 }
                 let channel = self.channel_to(id, &service).await?;
                 Ok(Response::ChannelReady { channel_id: self.park_channel(channel) })
@@ -842,7 +866,10 @@ impl Daemon {
             Request::SetAutoAccept { device, enabled } => {
                 let id = self.resolve_device(&device)?;
                 let mut trust = self.trust.lock().unwrap();
-                let entry = trust.devices.get_mut(&id.to_string()).ok_or_else(|| anyhow!("{device} is not paired"))?;
+                let entry = trust
+                    .devices
+                    .get_mut(&id.to_string())
+                    .ok_or_else(|| coded(ErrorCode::NotPaired, format!("{device} is not paired")))?;
                 entry.auto_accept = enabled;
                 trust.save()?;
                 Ok(Response::Ok)
@@ -850,7 +877,10 @@ impl Daemon {
             Request::SetClipboardSend { device, enabled } => {
                 let id = self.resolve_device(&device)?;
                 let mut trust = self.trust.lock().unwrap();
-                let entry = trust.devices.get_mut(&id.to_string()).ok_or_else(|| anyhow!("{device} is not paired"))?;
+                let entry = trust
+                    .devices
+                    .get_mut(&id.to_string())
+                    .ok_or_else(|| coded(ErrorCode::NotPaired, format!("{device} is not paired")))?;
                 entry.clipboard_send = Some(enabled);
                 trust.save()?;
                 Ok(Response::Ok)
@@ -861,7 +891,7 @@ impl Daemon {
                     Some(device) => {
                         let id = self.resolve_device(&device)?;
                         if self.trusted(id).is_none() {
-                            bail!("{device} is not paired");
+                            return Err(coded(ErrorCode::NotPaired, format!("{device} is not paired")));
                         }
                         self.send_clipboard(id, text).await?;
                         Ok(Response::Sent { count: 1 })
@@ -885,7 +915,7 @@ impl Daemon {
                     Some(device) => {
                         let id = self.resolve_device(&device)?;
                         if self.trusted(id).is_none() {
-                            bail!("{device} is not paired");
+                            return Err(coded(ErrorCode::NotPaired, format!("{device} is not paired")));
                         }
                         self.send_clipboard_image(id, image).await?;
                         Ok(Response::Sent { count: 1 })
@@ -1252,7 +1282,7 @@ mod tests {
             crossdrop_proto::wire::OpenChannel { service: services::PAIR.into(), version: CHANNEL_VERSION + 1 };
         write_frame(&mut send, &header).await.unwrap();
         let reply: ChannelReply = read_frame(&mut recv).await.unwrap();
-        assert!(matches!(reply, ChannelReply::Rejected { reason } if reason.contains("version")));
+        assert!(matches!(reply, ChannelReply::Rejected { reason, .. } if reason.contains("version")));
     }
 
     #[tokio::test]

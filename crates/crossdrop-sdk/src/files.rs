@@ -201,7 +201,7 @@ where
     let offsets = match read_frame::<_, Files>(io).await? {
         Files::Answer { accepted: false, .. } => return Err(Declined.into()),
         Files::Answer { accepted: true, offsets } if offsets.len() == items.len() => offsets,
-        Files::Error { message } => bail!("receiver error: {message}"),
+        Files::Error { message, code } => return Err(receiver_error(message, code)),
         other => bail!("unexpected answer: {other:?}"),
     };
     let resumed: u64 = items.iter().zip(&offsets).map(|((e, _), o)| (*o).min(e.size)).sum();
@@ -242,16 +242,21 @@ where
         // The receiver may have stopped the transfer and said why before
         // closing: report that rather than "broken pipe".
         let last = tokio::time::timeout(std::time::Duration::from_secs(2), read_frame::<_, Files>(io)).await;
-        if let Ok(Ok(Files::Error { message })) = last {
-            bail!("receiver error: {message}");
+        if let Ok(Ok(Files::Error { message, code })) = last {
+            return Err(receiver_error(message, code));
         }
         return Err(e);
     }
     match read_frame::<_, Files>(io).await? {
         Files::Done { received } => Ok(SendReport { received, bytes_sent: total - resumed, resumed }),
-        Files::Error { message } => bail!("receiver error: {message}"),
+        Files::Error { message, code } => Err(receiver_error(message, code)),
         other => bail!("unexpected answer: {other:?}"),
     }
+}
+
+/// An error the receiving device reported, as "receiver error: …".
+fn receiver_error(message: String, code: Option<crossdrop_proto::ErrorCode>) -> anyhow::Error {
+    crate::failure(format!("receiver error: {message}"), code)
 }
 
 #[cfg(test)]

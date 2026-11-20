@@ -29,7 +29,7 @@ where
             Request::Attach { channel_id } => {
                 let Some(channel) = daemon.take_channel(&channel_id) else {
                     let msg = "unknown or expired channel".to_string();
-                    write_frame(&mut stream, &Response::Error { message: msg }).await?;
+                    write_frame(&mut stream, &Response::Error { message: msg, code: None }).await?;
                     return Ok(());
                 };
                 write_frame(&mut stream, &Response::Ok).await?;
@@ -43,7 +43,7 @@ where
                 let resp = daemon
                     .handle_request(other)
                     .await
-                    .unwrap_or_else(|e| Response::Error { message: format!("{e:#}") });
+                    .unwrap_or_else(|e| Response::Error { message: format!("{e:#}"), code: crate::error_code(&e) });
                 write_frame(&mut stream, &resp).await?;
             }
         }
@@ -59,7 +59,7 @@ where
     let mut events = match daemon.register_service(&service) {
         Ok(rx) => rx,
         Err(e) => {
-            write_frame(&mut wr, &Response::Error { message: format!("{e:#}") }).await?;
+            write_frame(&mut wr, &Response::Error { message: format!("{e:#}"), code: crate::error_code(&e) }).await?;
             return Ok(());
         }
     };

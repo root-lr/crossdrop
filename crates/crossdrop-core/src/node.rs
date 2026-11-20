@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::{anyhow, bail, Context, Result};
 use crossdrop_proto::wire::{ChannelReply, OpenChannel};
-use crossdrop_proto::{read_frame_max, write_frame, MAX_SMALL_FRAME_LEN};
+use crossdrop_proto::{read_frame_max, write_frame, ErrorCode, MAX_SMALL_FRAME_LEN};
 use quinn::{Connection, RecvStream, SendStream};
 use rustls::pki_types::CertificateDer;
 
@@ -107,13 +107,17 @@ impl Channel {
     }
 }
 
-/// Error returned when the peer refuses to open a channel.
+/// Error returned when the peer refuses to open a channel: its reason, and
+/// what kind of refusal it is when the peer says.
 #[derive(Debug)]
-pub struct Rejected(pub String);
+pub struct Rejected {
+    pub reason: String,
+    pub code: Option<ErrorCode>,
+}
 
 impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "channel rejected by peer: {}", self.0)
+        write!(f, "channel rejected by peer: {}", self.reason)
     }
 }
 
@@ -126,7 +130,7 @@ pub async fn open_channel(conn: &Connection, service: &str) -> Result<Channel> {
     write_frame(&mut send, &header).await?;
     match read_frame_max::<_, ChannelReply>(&mut recv, MAX_SMALL_FRAME_LEN).await? {
         ChannelReply::Accepted => Ok(Channel { send, recv }),
-        ChannelReply::Rejected { reason } => Err(Rejected(reason).into()),
+        ChannelReply::Rejected { reason, code } => Err(Rejected { reason, code }.into()),
     }
 }
 
@@ -158,8 +162,13 @@ impl PendingChannel {
         Ok(Channel { send: self.send, recv: self.recv })
     }
 
-    pub async fn reject(mut self, reason: impl Into<String>) -> Result<()> {
-        write_frame(&mut self.send, &ChannelReply::Rejected { reason: reason.into() }).await?;
+    pub async fn reject(self, reason: impl Into<String>) -> Result<()> {
+        self.reject_as(None, reason).await
+    }
+
+    /// Like [`PendingChannel::reject`], saying what kind of refusal it is.
+    pub async fn reject_as(mut self, code: Option<ErrorCode>, reason: impl Into<String>) -> Result<()> {
+        write_frame(&mut self.send, &ChannelReply::Rejected { reason: reason.into(), code }).await?;
         self.send.finish()?;
         Ok(())
     }

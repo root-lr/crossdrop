@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use crossdrop_proto::ipc::ReceivingInfo;
 use crossdrop_proto::wire::{FileEntry, Files};
-use crossdrop_proto::{read_frame, write_frame};
+use crossdrop_proto::{read_frame, write_frame, ErrorCode};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tracing::{info, warn};
@@ -169,7 +169,7 @@ where
     let entries = offer.entries.clone();
     let result = tokio::select! {
         r = receive_inner(io, offer, dir, peer, from, progress) => r,
-        () = progress.until_cancelled() => Err(anyhow::anyhow!(CANCELLED)),
+        () = progress.until_cancelled() => Err(crate::coded(ErrorCode::Cancelled, CANCELLED)),
     };
     if progress.cancelled() {
         // Nothing to resume: remove the partial files and the journal.
@@ -183,7 +183,7 @@ where
     }
     let answer = match &result {
         Ok(n) => Files::Done { received: *n },
-        Err(e) => Files::Error { message: format!("{e:#}") },
+        Err(e) => Files::Error { message: format!("{e:#}"), code: crate::error_code(e) },
     };
     // Best effort: the sender may already be gone.
     let _ = write_frame(io, &answer).await;
@@ -247,7 +247,10 @@ where
         if let Some(known) = t.journal.done.get(&entry.path).cloned() {
             let sent = expect_file_end(io).await?;
             if sent != known {
-                bail!("{} changed on the sending side; send it again", entry.path);
+                return Err(crate::coded(
+                    ErrorCode::Changed,
+                    format!("{} changed on the sending side; send it again", entry.path),
+                ));
             }
             received += 1;
             continue;
@@ -289,7 +292,7 @@ where
         if actual != expected {
             let _ = tokio::fs::remove_file(&part).await;
             warn!(file = %entry.path, "integrity check failed");
-            bail!("integrity check failed for {}", entry.path);
+            return Err(crate::coded(ErrorCode::Corrupted, format!("integrity check failed for {}", entry.path)));
         }
         if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -354,7 +357,10 @@ const SPARE_BYTES: u64 = 64 * 1024 * 1024;
 fn check_space(needed: u64, free: u64) -> Result<()> {
     if needed.saturating_add(SPARE_BYTES) > free {
         let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
-        bail!("not enough disk space: {:.1} MiB to receive, {:.1} MiB free", mib(needed), mib(free));
+        return Err(crate::coded(
+            ErrorCode::DiskFull,
+            format!("not enough disk space: {:.1} MiB to receive, {:.1} MiB free", mib(needed), mib(free)),
+        ));
     }
     Ok(())
 }
@@ -622,6 +628,7 @@ mod tests {
         });
         let err = send_files(&mut a, &[src], &mut |_: SendEvent<'_>| {}).await.unwrap_err();
         assert!(err.to_string().contains("cancelled on the receiving side"), "{err}");
+        assert_eq!(crossdrop_sdk::error_code(&err), Some(ErrorCode::Cancelled));
         assert!(receiver.await.unwrap().is_err());
         assert!(!dl.join("big.bin").exists());
         let left = std::fs::read_dir(dl.join(PARTIAL_DIR)).unwrap().count();
