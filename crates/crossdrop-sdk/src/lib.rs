@@ -210,6 +210,28 @@ impl Client {
         }
     }
 
+    /// Puts the PNG image at `path` (read by the daemon) in the clipboard of
+    /// `device`, or of every device this one shares its clipboard with.
+    pub async fn clipboard_send_image(&mut self, path: &Path, device: Option<&str>) -> Result<u32> {
+        let req =
+            Request::ClipboardSendImage { path: path.to_string_lossy().into_owned(), device: device.map(Into::into) };
+        match self.request(&req).await? {
+            Response::Sent { count } => Ok(count),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Saves the last image received from another device as a PNG at
+    /// `path` (written by the daemon): `(width, height, sender)`, or `None`.
+    pub async fn clipboard_get_image(&mut self, path: &Path) -> Result<Option<(u32, u32, String)>> {
+        let req = Request::ClipboardGetImage { path: path.to_string_lossy().into_owned() };
+        match self.request(&req).await? {
+            Response::ClipboardImage { width: 0, .. } => Ok(None),
+            Response::ClipboardImage { width, height, from } => Ok(Some((width, height, from.unwrap_or_default()))),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Last text received from another device, with its sender's name.
     pub async fn clipboard_get(&mut self) -> Result<Option<(String, String)>> {
         match self.request(&Request::ClipboardGet).await? {

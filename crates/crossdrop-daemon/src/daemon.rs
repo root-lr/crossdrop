@@ -11,13 +11,13 @@ use crossdrop_core::{
     CHANNEL_VERSION,
 };
 use crossdrop_proto::ipc::{DeviceInfo, Event, OfferInfo, PairRequestInfo, ReceivingInfo, Request, Response};
-use crossdrop_proto::wire::{ChannelReply, Clipboard, Pair};
+use crossdrop_proto::wire::{ChannelReply, Clipboard, ClipboardImage, Pair};
 use crossdrop_proto::{read_frame, read_frame_max, services, write_frame, MAX_SMALL_FRAME_LEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::clipboard::SystemClipboard;
+use crate::clipboard::{Content, Image, SystemClipboard};
 use crate::config::{Config, TrustStore, TrustedDevice};
 
 /// How long a user has to compare pairing codes.
@@ -31,6 +31,10 @@ const PAIR_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Largest clipboard text shared, in bytes. Once escaped as JSON it must fit
 /// in one frame (`MAX_FRAME_LEN`, 8 MiB) even in the worst case (6×).
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
+/// Clipboard images larger than this (as PNG) are not shared.
+const MAX_CLIPBOARD_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+/// How long a clipboard image may take to arrive.
+const CLIPBOARD_IMAGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an opened channel waits for its client to attach.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an incoming transfer waits for the user to accept it.
@@ -77,9 +81,11 @@ pub(crate) struct Daemon {
     receiving: Mutex<HashMap<String, Arc<crate::files::Progress>>>,
     clipboard: Option<SystemClipboard>,
     /// Last clipboard text seen locally or applied from a peer (loop guard).
-    clip_known: Mutex<Option<String>>,
+    clip_known: Mutex<Option<Content>>,
     /// Last text received from a peer, with the sender's name.
     clip_received: Mutex<Option<(String, String)>>,
+    /// Last image received from a peer, with the sender's name.
+    clip_image_received: Mutex<Option<(Image, String)>>,
 }
 
 impl Daemon {
@@ -99,6 +105,7 @@ impl Daemon {
             clipboard,
             clip_known: Mutex::default(),
             clip_received: Mutex::default(),
+            clip_image_received: Mutex::default(),
         })
     }
 
@@ -200,7 +207,9 @@ impl Daemon {
             let _ = io.shutdown().await;
             return Ok(());
         }
-        if !device.allows(&service) {
+        // Images come with the clipboard permission.
+        let needed = if service == services::CLIPBOARD_IMAGE { services::CLIPBOARD } else { service.as_str() };
+        if !device.allows(needed) {
             info!(peer = %device.name, %service, "channel refused: no permission");
             return pending.reject(format!("permission denied for {service}")).await;
         }
@@ -229,6 +238,26 @@ impl Daemon {
             self.receiving.lock().unwrap().remove(&key);
             let n = result?;
             info!(from = %device.name, files = n, dir = %dir.display(), "transfer complete");
+            return Ok(());
+        }
+        if service == services::CLIPBOARD_IMAGE {
+            let mut io = pending.accept().await?.into_io();
+            let ClipboardImage { width, height, size } = read_frame_max(&mut io, MAX_SMALL_FRAME_LEN).await?;
+            if size > MAX_CLIPBOARD_IMAGE_BYTES {
+                write_frame(&mut io, &ChannelReply::Rejected { reason: "clipboard image too large".into() }).await?;
+                return Ok(());
+            }
+            let mut png = vec![0; size as usize];
+            tokio::time::timeout(CLIPBOARD_IMAGE_TIMEOUT, io.read_exact(&mut png)).await??;
+            let image = Image { width, height, png };
+            // Checked before it reaches the clipboard.
+            if let Err(e) = image.to_rgba() {
+                write_frame(&mut io, &ChannelReply::Rejected { reason: format!("{e:#}") }).await?;
+                return Ok(());
+            }
+            self.apply_remote_image(image, device.name.clone());
+            write_frame(&mut io, &ChannelReply::Accepted).await?;
+            let _ = io.shutdown().await;
             return Ok(());
         }
         if service == services::CLIPBOARD {
@@ -418,32 +447,45 @@ impl Daemon {
 
     fn apply_remote_clipboard(&self, text: String, from: String) {
         info!(%from, chars = text.chars().count(), "clipboard received");
-        *self.clip_known.lock().unwrap() = Some(text.clone());
+        let content = Content::Text(text.clone());
+        *self.clip_known.lock().unwrap() = Some(content.clone());
         if self.config.clipboard_sync {
             if let Some(cb) = &self.clipboard {
-                cb.set(text.clone());
+                cb.set(content);
             }
         }
         *self.clip_received.lock().unwrap() = Some((text, from));
     }
 
-    /// Watches the system clipboard and shares every new text.
+    fn apply_remote_image(&self, image: Image, from: String) {
+        info!(%from, width = image.width, height = image.height, bytes = image.png.len(), "clipboard image received");
+        let content = Content::Image(image.clone());
+        *self.clip_known.lock().unwrap() = Some(content.clone());
+        if self.config.clipboard_sync {
+            if let Some(cb) = &self.clipboard {
+                cb.set(content);
+            }
+        }
+        *self.clip_image_received.lock().unwrap() = Some((image, from));
+    }
+
+    /// Watches the system clipboard and shares every new text or image.
     pub async fn clipboard_loop(self: Arc<Self>) {
         let Some(cb) = self.clipboard.clone() else { return };
         // Whatever is there at startup is not a "copy" by the user.
         *self.clip_known.lock().unwrap() = cb.get().await;
         loop {
             tokio::time::sleep(CLIPBOARD_POLL).await;
-            let Some(text) = cb.get().await else { continue };
-            if text.is_empty() || self.clip_known.lock().unwrap().as_deref() == Some(text.as_str()) {
+            let Some(content) = cb.get().await else { continue };
+            if self.clip_known.lock().unwrap().as_ref() == Some(&content) {
                 continue;
             }
-            *self.clip_known.lock().unwrap() = Some(text.clone());
-            if let Err(e) = check_clipboard_size(&text) {
+            *self.clip_known.lock().unwrap() = Some(content.clone());
+            if let Err(e) = check_content_size(&content) {
                 info!("clipboard not shared: {e}");
                 continue;
             }
-            let n = self.broadcast_clipboard(text).await;
+            let n = self.broadcast(content).await;
             debug!(devices = n, "clipboard shared");
         }
     }
@@ -472,16 +514,40 @@ impl Daemon {
         Ok(())
     }
 
-    /// Sends `text` to every clipboard peer; returns how many got it.
-    async fn broadcast_clipboard(self: &Arc<Self>, text: String) -> u32 {
+    /// Sends a clipboard image to `peer`. A device too old to know images
+    /// refuses the service, and is skipped.
+    async fn send_clipboard_image(self: &Arc<Self>, peer: DeviceId, image: Image) -> Result<()> {
+        let mut io = self.channel_to(peer, services::CLIPBOARD_IMAGE).await?.into_io();
+        let header = ClipboardImage { width: image.width, height: image.height, size: image.png.len() as u64 };
+        write_frame(&mut io, &header).await?;
+        io.write_all(&image.png).await?;
+        io.flush().await?;
+        let ack = tokio::time::timeout(CLIPBOARD_IMAGE_TIMEOUT, read_frame::<_, ChannelReply>(&mut io)).await??;
+        match ack {
+            ChannelReply::Accepted => {}
+            ChannelReply::Rejected { reason } => bail!("clipboard image refused: {reason}"),
+        }
+        let _ = io.shutdown().await;
+        Ok(())
+    }
+
+    async fn send_content(self: &Arc<Self>, peer: DeviceId, content: Content) -> Result<()> {
+        match content {
+            Content::Text(text) => self.send_clipboard(peer, text).await,
+            Content::Image(image) => self.send_clipboard_image(peer, image).await,
+        }
+    }
+
+    /// Sends text or an image to every clipboard peer; returns how many got it.
+    async fn broadcast(self: &Arc<Self>, content: Content) -> u32 {
         let tasks: Vec<_> = self
             .clipboard_peers()
             .into_iter()
             .map(|peer| {
                 let this = self.clone();
-                let text = text.clone();
+                let content = content.clone();
                 tokio::spawn(async move {
-                    let r = this.send_clipboard(peer, text).await;
+                    let r = this.send_content(peer, content).await;
                     if let Err(e) = &r {
                         debug!(peer = %peer.short(), "clipboard not delivered: {e:#}");
                     }
@@ -806,10 +872,42 @@ impl Daemon {
                                 "this device sends its clipboard to no device; run `crossdrop allow <device> clipboard`"
                             );
                         }
-                        Ok(Response::Sent { count: self.broadcast_clipboard(text).await })
+                        Ok(Response::Sent { count: self.broadcast(Content::Text(text)).await })
                     }
                 }
             }
+            Request::ClipboardSendImage { path, device } => {
+                let bytes = std::fs::read(&path).with_context(|| path.clone())?;
+                let (width, height, _) = crate::clipboard::decode_png(&bytes).with_context(|| path.clone())?;
+                let image = Image { width, height, png: bytes };
+                check_content_size(&Content::Image(image.clone()))?;
+                match device {
+                    Some(device) => {
+                        let id = self.resolve_device(&device)?;
+                        if self.trusted(id).is_none() {
+                            bail!("{device} is not paired");
+                        }
+                        self.send_clipboard_image(id, image).await?;
+                        Ok(Response::Sent { count: 1 })
+                    }
+                    None => {
+                        if self.clipboard_peers().is_empty() {
+                            bail!(
+                                "this device sends its clipboard to no device; run `crossdrop allow <device> clipboard`"
+                            );
+                        }
+                        Ok(Response::Sent { count: self.broadcast(Content::Image(image)).await })
+                    }
+                }
+            }
+            Request::ClipboardGetImage { path } => match self.clip_image_received.lock().unwrap().clone() {
+                Some((image, from)) => {
+                    crossdrop_sdk::write_atomic(std::path::Path::new(&path), &image.png)
+                        .with_context(|| path.clone())?;
+                    Ok(Response::ClipboardImage { width: image.width, height: image.height, from: Some(from) })
+                }
+                None => Ok(Response::ClipboardImage { width: 0, height: 0, from: None }),
+            },
             Request::ClipboardGet => {
                 let (text, from) = match self.clip_received.lock().unwrap().clone() {
                     Some((t, f)) => (Some(t), Some(f)),
@@ -879,6 +977,19 @@ async fn connect(node: &Node, addr: SocketAddr) -> Result<(Connection, DeviceId)
 /// A name another device gave itself, safe to store and show.
 fn peer_name(raw: &str) -> String {
     crossdrop_proto::clean_device_name(raw).unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Texts and images too large to share.
+fn check_content_size(content: &Content) -> Result<()> {
+    match content {
+        Content::Text(text) => check_clipboard_size(text),
+        Content::Image(image) if image.png.len() as u64 > MAX_CLIPBOARD_IMAGE_BYTES => bail!(
+            "the clipboard image is {} MiB as PNG; images are shared up to {} MiB",
+            image.png.len() / (1024 * 1024),
+            MAX_CLIPBOARD_IMAGE_BYTES / (1024 * 1024)
+        ),
+        Content::Image(_) => Ok(()),
+    }
 }
 
 /// Clipboard texts larger than [`MAX_CLIPBOARD_BYTES`] are not sent.
