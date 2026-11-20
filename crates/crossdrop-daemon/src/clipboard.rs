@@ -61,16 +61,25 @@ impl Image {
     }
 }
 
+/// Largest image read, in pixels: 64 Mpx (an 8K screen is 33), 256 MiB as
+/// RGBA.
+const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+
 /// PNG → (width, height, RGBA), whatever its color type.
 pub fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     // Palette, gray and 16-bit images become 8-bit RGB(A).
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().context("not a PNG image")?;
+    // A small PNG can claim a huge size: refuse it before allocating.
+    let (w, h) = (reader.info().width, reader.info().height);
+    if u64::from(w) * u64::from(h) > MAX_IMAGE_PIXELS {
+        bail!("image too large: {w}×{h} pixels");
+    }
     let mut buf = vec![0; reader.output_buffer_size().context("image too large")?];
     let frame = reader.next_frame(&mut buf).context("damaged PNG image")?;
     buf.truncate(frame.buffer_size());
-    let pixels = (frame.width * frame.height) as usize;
+    let pixels = frame.width as usize * frame.height as usize;
     let rgba = match frame.color_type {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
@@ -394,6 +403,31 @@ mod tests {
         let lying = Image { width: 9, ..image.clone() };
         assert!(lying.to_rgba().is_err(), "size must match the PNG");
         assert!(decode_png(b"not a png").is_err());
+    }
+
+    #[test]
+    fn a_small_png_claiming_a_huge_size_is_refused_before_allocating() {
+        let image = Image::from_rgba(1, 1, &[1, 2, 3, 4]).unwrap();
+        // IHDR comes right after the 8-byte signature: length, "IHDR",
+        // width, height, … then its CRC over type and data.
+        let mut png = image.png.clone();
+        png[16..20].copy_from_slice(&40_000u32.to_be_bytes());
+        png[20..24].copy_from_slice(&40_000u32.to_be_bytes());
+        let crc = crc32(&png[12..29]);
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        let err = decode_png(&png).unwrap_err();
+        assert!(format!("{err:#}").contains("40000×40000 pixels"), "{err:#}");
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &b in bytes {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            }
+        }
+        !crc
     }
 
     #[test]

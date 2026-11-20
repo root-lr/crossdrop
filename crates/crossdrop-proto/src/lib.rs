@@ -111,6 +111,13 @@ pub fn error_code(error: &(dyn std::error::Error + 'static)) -> Option<ErrorCode
     None
 }
 
+/// Characters that change the direction of the text around them. They can
+/// make `invoice\u{202E}fdp.exe` look like `invoiceexe.pdf`, so they are
+/// removed from names that come from other devices.
+pub fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 /// Longest device name kept from another device, in characters.
 pub const MAX_NAME_CHARS: usize = 64;
 
@@ -118,9 +125,8 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// bidirectional-override characters (which can disguise a name), single
 /// spaces, at most [`MAX_NAME_CHARS`] characters. `None` if nothing is left.
 pub fn clean_device_name(raw: &str) -> Option<String> {
-    let bidi =
-        |c: char| matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
-    let kept: String = raw.chars().map(|c| if c.is_control() { ' ' } else { c }).filter(|c| !bidi(*c)).collect();
+    let kept: String =
+        raw.chars().map(|c| if c.is_control() { ' ' } else { c }).filter(|c| !is_bidi_control(*c)).collect();
     let name = kept.split_whitespace().collect::<Vec<_>>().join(" ");
     let name: String = name.chars().take(MAX_NAME_CHARS).collect();
     let name = name.trim_end();

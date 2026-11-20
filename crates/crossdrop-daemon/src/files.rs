@@ -39,6 +39,11 @@ impl Offer {
     pub fn total_bytes(&self) -> u64 {
         self.entries.iter().map(|e| e.size).sum()
     }
+
+    /// The files' paths as they will be stored, cleaned: fit to show.
+    pub fn shown_paths(&self) -> impl Iterator<Item = String> + '_ {
+        self.parts.iter().map(|p| p.join("/"))
+    }
 }
 
 /// Reads and validates the sender's offer.
@@ -50,6 +55,10 @@ pub async fn read_offer<S: AsyncRead + Unpin>(io: &mut S) -> Result<Offer> {
     let items = entries.len() + dirs.len();
     if items == 0 || items > MAX_ENTRIES {
         bail!("offer with {} files and {} folders refused", entries.len(), dirs.len());
+    }
+    // Checked once here, so that every later sum of sizes is exact.
+    if entries.iter().try_fold(0u64, |total, e| total.checked_add(e.size)).is_none() {
+        bail!("offer refused: its file sizes add up to more than any disk holds");
     }
     let mut seen = std::collections::HashSet::new();
     if let Some(dup) = entries.iter().find(|e| !seen.insert(e.path.as_str())) {
@@ -256,7 +265,8 @@ where
             continue;
         }
 
-        progress.update(|p| p.current = entry.path.clone());
+        // The cleaned name: it is shown to the user.
+        progress.update(|p| p.current = parts.join("/"));
         let part = part_path(dir, peer, entry);
         let mut file =
             tokio::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&part).await?;
@@ -439,7 +449,7 @@ fn sanitize_path(path: &str) -> Result<Vec<String>> {
 fn sanitize_component(c: &str, windows: bool) -> String {
     let name = c
         .chars()
-        .filter(|ch| !ch.is_control())
+        .filter(|ch| !ch.is_control() && !crossdrop_proto::is_bidi_control(*ch))
         .map(|ch| if "\\:*?\"<>|".contains(ch) { '_' } else { ch })
         .collect::<String>()
         .trim()
@@ -549,6 +559,24 @@ mod tests {
         write_frame(&mut a, &offer).await.unwrap();
         let err = read_offer(&mut b).await.err().unwrap();
         assert!(err.to_string().contains("twice"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_offer_whose_sizes_overflow_is_refused() {
+        // [u64::MAX, 2] would add up to 1 byte and pass the disk check.
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        let entry = |path: &str, size| FileEntry { path: path.into(), size, mtime: 0, executable: false };
+        let entries = vec![entry("a", u64::MAX), entry("b", 2)];
+        write_frame(&mut a, &Files::Offer { entries, desktop: false, dirs: vec![] }).await.unwrap();
+        let err = read_offer(&mut b).await.err().unwrap();
+        assert!(err.to_string().contains("add up"), "{err}");
+    }
+
+    #[test]
+    fn direction_marks_and_escapes_are_removed_from_names() {
+        // Would show as "invoiceexe.pdf" in a file manager.
+        assert_eq!(sanitize_path("invoice\u{202E}fdp.exe").unwrap(), ["invoicefdp.exe"]);
+        assert_eq!(sanitize_path("a\u{2066}b/\u{1b}]0;x\u{7}c").unwrap(), ["ab", "]0;xc"]);
     }
 
     #[test]
